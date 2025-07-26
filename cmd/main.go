@@ -14,6 +14,12 @@ import (
 )
 
 func main() {
+	// 检查命令行参数
+	if len(os.Args) > 1 && os.Args[1] == "--clear-session" {
+		clearSessionAndExit()
+		return
+	}
+
 	// 加载配置
 	cfg, err := config.LoadConfig()
 	if err != nil {
@@ -165,4 +171,27 @@ func selectMode(log *logger.Logger) int {
 	}
 
 	return mode
+}
+
+// clearSessionAndExit 清除会话文件并退出
+func clearSessionAndExit() {
+	fmt.Println("正在清除会话文件...")
+	
+	// 加载配置以获取会话目录
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		fmt.Printf("加载配置失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 创建临时客户端以使用清除会话功能
+	log := logger.New("info")
+	client := telegram.New(cfg, log)
+	
+	if err := client.ClearSession(); err != nil {
+		fmt.Printf("清除会话失败: %v\n", err)
+		os.Exit(1)
+	}
+	
+	fmt.Println("会话文件已清除，下次启动将需要重新登录")
 }

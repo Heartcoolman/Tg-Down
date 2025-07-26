@@ -2,6 +2,34 @@
 
 一个基于Go语言的Telegram群聊视频图片下载脚本，支持实时监控新消息和批量下载历史媒体文件。
 
+## 🚀 快速开始
+
+### 第一步：获取API凭据
+1. 访问 [https://my.telegram.org](https://my.telegram.org) 并登录
+2. 创建新应用，获取 `api_id` 和 `api_hash`
+
+### 第二步：配置和运行
+```bash
+# 1. 复制配置文件
+cp config.yaml.example config.yaml
+
+# 2. 编辑config.yaml，填入你的API信息
+# 3. 运行程序
+go run cmd/main.go
+
+# 4. 首次运行需要输入验证码登录
+# 5. 后续运行会自动使用保存的会话，无需重复登录
+```
+
+### 演示脚本
+```bash
+# Linux/macOS
+./demo.sh
+
+# Windows
+demo.bat
+```
+
 ## 功能特性
 
 - 🚀 **实时监控**: 自动监控群聊新消息并下载媒体文件
@@ -10,6 +38,7 @@
 - 📊 **下载统计**: 实时显示下载进度和统计信息
 - 🎯 **智能去重**: 自动跳过已下载的文件
 - 📁 **分类存储**: 按聊天分组存储下载的文件
+- 🔐 **持久登录**: 首次登录后保存会话，无需重复认证
 - ⚙️ **灵活配置**: 支持YAML配置文件和环境变量配置
 
 ## 安装和配置
@@ -40,6 +69,9 @@ download:
   path: "./downloads"
   max_concurrent: 5
   batch_size: 100
+
+session:
+  dir: "./sessions"
 
 log:
   level: "info"
@@ -79,11 +111,20 @@ go run cmd/main.go
 
 1. 运行程序后，会要求输入验证码进行登录
 2. 如果启用了两步验证，还需要输入密码
-3. 程序会显示可用的聊天列表，选择要下载的群聊
-4. 选择操作模式：
+3. 登录成功后，会话信息会自动保存到 `sessions` 目录
+4. 程序会显示可用的聊天列表，选择要下载的群聊
+5. 选择操作模式：
    - 模式1：只下载历史媒体文件
    - 模式2：只监控新消息
    - 模式3：下载历史媒体文件 + 监控新消息
+
+### 后续运行
+
+- 程序会自动使用保存的会话信息登录，无需重新输入验证码
+- 如果需要重新登录，可以使用 `--clear-session` 参数清除会话：
+  ```bash
+  ./tg-down --clear-session
+  ```
 
 ### 配置选项
 
@@ -95,6 +136,7 @@ go run cmd/main.go
 | `download.path` | 下载路径 | `./downloads` |
 | `download.max_concurrent` | 最大并发下载数 | `5` |
 | `download.batch_size` | 批量处理大小 | `100` |
+| `session.dir` | 会话文件保存目录 | `./sessions` |
 | `chat.target_id` | 目标群组ID（可选） | `0` |
 | `log.level` | 日志级别 | `info` |
 
