@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -17,8 +18,8 @@ import (
 
 // Client Telegram客户端包装器
 type Client struct {
-	client     *telegram.Client
-	api        *tg.Client
+	Client     *telegram.Client
+	API        *tg.Client
 	config     *config.Config
 	logger     *logger.Logger
 	downloader *downloader.Downloader
@@ -26,18 +27,24 @@ type Client struct {
 
 // New 创建新的Telegram客户端
 func New(cfg *config.Config, logger *logger.Logger) *Client {
-	return &Client{
+	tgClient := telegram.NewClient(cfg.API.ID, cfg.API.Hash, telegram.Options{})
+	c := &Client{
+		Client: tgClient,
+		API: tgClient.API(),
 		config: cfg,
 		logger: logger,
 	}
+	c.downloader = downloader.New(tgClient, cfg.Download.Path, cfg.Download.MaxConcurrent, logger)
+	c.downloader.SetDownloadFunc(c.DownloadFile)
+	return c
 }
 
 // Connect 连接到Telegram
 func (c *Client) Connect(ctx context.Context) error {
 	// 创建客户端
 	client := telegram.NewClient(c.config.API.ID, c.config.API.Hash, telegram.Options{})
-	c.client = client
-	c.api = client.API()
+	c.Client = client
+	c.API = client.API()
 
 	// 创建下载器
 	c.downloader = downloader.New(client, c.config.Download.Path, c.config.Download.MaxConcurrent, c.logger)
@@ -53,7 +60,7 @@ func (c *Client) Connect(ctx context.Context) error {
 
 		if !status.Authorized {
 			// 需要登录
-			if err := c.authenticate(ctx); err != nil {
+			if err := c.Authenticate(ctx); err != nil {
 				return fmt.Errorf("认证失败: %w", err)
 			}
 		}
@@ -64,23 +71,54 @@ func (c *Client) Connect(ctx context.Context) error {
 }
 
 // authenticate 进行用户认证
-func (c *Client) authenticate(ctx context.Context) error {
-	flow := auth.NewFlow(
-		auth.CodeOnly(c.config.API.Phone, auth.CodeAuthenticatorFunc(func(ctx context.Context, sentCode *tg.AuthSentCode) (string, error) {
-			fmt.Print("请输入验证码: ")
-			var code string
-			fmt.Scanln(&code)
-			return code, nil
-		})),
-		auth.SendCodeOptions{},
-	)
+func (c *Client) Authenticate(ctx context.Context) error {
+	c.logger.Info("开始认证流程...")
 
-	return c.client.Auth().IfNecessary(ctx, flow)
+	// 发送验证码
+	sentCodeClass, err := c.Client.Auth().SendCode(ctx, c.config.API.Phone, auth.SendCodeOptions{})
+	if err != nil {
+		return fmt.Errorf("发送验证码失败: %w", err)
+	}
+
+	sentCode, ok := sentCodeClass.(*tg.AuthSentCode)
+	if !ok {
+		return errors.New("unexpected sent code type")
+	}
+
+	// 提示输入验证码
+	fmt.Printf("请输入验证码: ")
+	var code string
+	if _, err := fmt.Scanln(&code); err != nil {
+		return fmt.Errorf("读取验证码失败: %w", err)
+	}
+
+	// 进行SignIn
+	_, err = c.Client.Auth().SignIn(ctx, c.config.API.Phone, code, sentCode.PhoneCodeHash)
+	if errors.Is(err, auth.ErrPasswordAuthNeeded) {
+		// 提示输入密码
+		fmt.Printf("请输入两步验证密码: ")
+		var password string
+		if _, err := fmt.Scanln(&password); err != nil {
+			return fmt.Errorf("读取密码失败: %w", err)
+		}
+
+		// 使用密码进行认证
+		_, err = c.Client.Auth().Password(ctx, password)
+		if err != nil {
+			return fmt.Errorf("两步验证失败: %w", err)
+		}
+		c.logger.Info("两步验证成功")
+	} else if err != nil {
+		return fmt.Errorf("SignIn失败: %w", err)
+	}
+
+	c.logger.Info("认证流程完成")
+	return nil
 }
 
 // GetChats 获取聊天列表
 func (c *Client) GetChats(ctx context.Context) ([]ChatInfo, error) {
-	dialogs, err := c.api.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+	dialogs, err := c.API.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
 		Limit: 100,
 	})
 	if err != nil {
@@ -142,7 +180,7 @@ func (c *Client) GetMediaMessages(ctx context.Context, chatID int64, limit int, 
 	inputPeer := &tg.InputPeerChat{ChatID: chatID}
 
 	// 获取消息历史
-	history, err := c.api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
+	history, err := c.API.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
 		Peer:      inputPeer,
 		OffsetID:  offsetID,
 		OffsetDate: 0,
@@ -201,24 +239,45 @@ func (c *Client) extractMediaInfo(msg tg.MessageClass, chatID int64) *downloader
 		if photo, ok := media.Photo.(*tg.Photo); ok {
 			mediaInfo = &downloader.MediaInfo{
 				MessageID: message.ID,
-				FileID:    fmt.Sprintf("%d", photo.ID),
-				FileName:  fmt.Sprintf("photo_%d_%d.jpg", message.ID, photo.ID),
+				FileID:    photo.ID,
+				AccessHash: photo.AccessHash,
+				FileReference: photo.FileReference,
+				MediaType: "photo",
+				FileName:  fmt.Sprintf("photo_%d.jpg", photo.ID),
 				ChatID:    chatID,
 				Date:      time.Unix(int64(message.Date), 0),
 				MimeType:  "image/jpeg",
 			}
 			
-			// 获取最大尺寸
+			// 获取最大尺寸和ThumbSize
+			var maxSize int
+			var thumbType string
 			for _, size := range photo.Sizes {
-				if s, ok := size.(*tg.PhotoSize); ok {
-					mediaInfo.FileSize = int64(s.Size)
+				switch s := size.(type) {
+				case *tg.PhotoSize:
+					if s.Size > maxSize {
+						maxSize = s.Size
+						thumbType = s.Type
+					}
+				case *tg.PhotoStrippedSize:
+					if len(s.Bytes) > maxSize {
+						maxSize = len(s.Bytes)
+						thumbType = s.Type
+					}
+				case *tg.PhotoSizeProgressive:
+					if len(s.Sizes) > 0 && s.Sizes[len(s.Sizes)-1] > maxSize {
+						maxSize = s.Sizes[len(s.Sizes)-1]
+						thumbType = s.Type
+					}
 				}
 			}
+			mediaInfo.FileSize = int64(maxSize)
+			mediaInfo.ThumbSize = thumbType
 		}
 
 	case *tg.MessageMediaDocument:
 		if doc, ok := media.Document.(*tg.Document); ok {
-			fileName := fmt.Sprintf("document_%d_%d", message.ID, doc.ID)
+			fileName := fmt.Sprintf("document_%d", doc.ID)
 			
 			// 尝试获取文件名
 			for _, attr := range doc.Attributes {
@@ -230,9 +289,13 @@ func (c *Client) extractMediaInfo(msg tg.MessageClass, chatID int64) *downloader
 
 			mediaInfo = &downloader.MediaInfo{
 				MessageID: message.ID,
-				FileID:    fmt.Sprintf("%d", doc.ID),
+				FileID:    doc.ID,
+				AccessHash: doc.AccessHash,
+				FileReference: doc.FileReference,
+				MediaType: "document",
 				FileName:  fileName,
 				FileSize:  doc.Size,
+				ThumbSize: "",
 				ChatID:    chatID,
 				Date:      time.Unix(int64(message.Date), 0),
 				MimeType:  doc.MimeType,
@@ -254,13 +317,27 @@ func (c *Client) DownloadFile(ctx context.Context, media *downloader.MediaInfo, 
 	defer file.Close()
 
 	// 根据媒体类型构建下载位置
-	var location tg.InputFileLocationClass
-	
-	// 这里需要根据实际的媒体类型和ID构建正确的位置
-	// 由于gotd库的复杂性，这里提供一个简化的实现框架
+var location tg.InputFileLocationClass
+if media.MediaType == "photo" {
+	location = &tg.InputPhotoFileLocation{
+		ID:            media.FileID,
+		AccessHash:    media.AccessHash,
+		FileReference: media.FileReference,
+		ThumbSize:     media.ThumbSize,
+	}
+} else if media.MediaType == "document" {
+	location = &tg.InputDocumentFileLocation{
+		ID:            media.FileID,
+		AccessHash:    media.AccessHash,
+		FileReference: media.FileReference,
+		ThumbSize:     media.ThumbSize,
+	}
+} else {
+	return errors.New("unsupported media type")
+}
 	
 	// 分块下载文件
-	const chunkSize = 1024 * 1024 // 1MB
+	const chunkSize = 512 * 1024 // 512KB
 	var offset int64 = 0
 	
 	for offset < media.FileSize {
@@ -270,7 +347,8 @@ func (c *Client) DownloadFile(ctx context.Context, media *downloader.MediaInfo, 
 		}
 
 		// 下载文件块
-		fileData, err := c.api.UploadGetFile(ctx, &tg.UploadGetFileRequest{
+		fileData, err := c.API.UploadGetFile(ctx, &tg.UploadGetFileRequest{
+			Precise: true,
 			Location: location,
 			Offset:   offset,
 			Limit:    limit,
@@ -307,40 +385,21 @@ func (c *Client) DownloadFile(ctx context.Context, media *downloader.MediaInfo, 
 	return nil
 }
 
-// StartRealTimeMonitoring 开始实时监控新消息
-func (c *Client) StartRealTimeMonitoring(ctx context.Context, chatID int64) error {
-	c.logger.Info("开始实时监控聊天 %d 的新消息", chatID)
-
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
-	lastMessageID := 0
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			// 获取最新消息
-			mediaList, err := c.GetMediaMessages(ctx, chatID, 10, lastMessageID)
-			if err != nil {
-				c.logger.Error("获取新消息失败: %v", err)
-				continue
-			}
-
-			if len(mediaList) > 0 {
-				c.logger.Info("发现 %d 个新的媒体文件", len(mediaList))
-				c.downloader.DownloadBatch(ctx, mediaList)
-				
-				// 更新最后消息ID
-				for _, media := range mediaList {
-					if media.MessageID > lastMessageID {
-						lastMessageID = media.MessageID
-					}
+// SetupRealTimeMonitoring 设置实时监控新消息的更新处理程序
+func (c *Client) SetupRealTimeMonitoring(chatID int64) {
+	c.Client.WithUpdatesHandler(func(ctx context.Context, u tg.UpdateClass) error {
+		switch update := u.(type) {
+		case *tg.UpdateNewMessage:
+			if msg, ok := update.Message.(*tg.Message); ok && msg.PeerID.GetID() == chatID {
+				if media := c.extractMediaInfo(msg, chatID); media != nil {
+					c.logger.Info("发现新媒体文件: %s", media.FileName)
+					c.downloader.DownloadBatch(ctx, []*downloader.MediaInfo{media})
 				}
 			}
 		}
-	}
+		return nil
+	})
+	c.logger.Info("实时监控已设置，监听聊天 %d 的新消息", chatID)
 }
 
 // DownloadHistoryMedia 下载历史媒体文件

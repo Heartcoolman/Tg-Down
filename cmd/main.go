@@ -43,53 +43,71 @@ func main() {
 	// 创建Telegram客户端
 	client := telegram.New(cfg, log)
 
-	// 连接到Telegram
+	// 连接到Telegram并运行主逻辑
 	log.Info("正在连接到Telegram...")
-	if err := client.Connect(ctx); err != nil {
-		log.Fatal("连接Telegram失败: %v", err)
-	}
-
-	// 选择目标聊天
-	var targetChatID int64
-	if cfg.Chat.TargetID != 0 {
-		targetChatID = cfg.Chat.TargetID
-		log.Info("使用配置的聊天ID: %d", targetChatID)
-	} else {
-		targetChatID, err = selectChat(ctx, client, log)
+	err = client.Client.Run(ctx, func(ctx context.Context) error {
+		// 检查授权状态
+		status, err := client.Client.Auth().Status(ctx)
 		if err != nil {
-			log.Fatal("选择聊天失败: %v", err)
-		}
-	}
-
-	// 询问用户操作模式
-	mode := selectMode(log)
-
-	switch mode {
-	case 1:
-		// 只下载历史媒体
-		log.Info("开始下载历史媒体文件...")
-		if err := client.DownloadHistoryMedia(ctx, targetChatID); err != nil {
-			log.Error("下载历史媒体失败: %v", err)
+			return fmt.Errorf("检查授权状态失败: %w", err)
 		}
 
-	case 2:
-		// 只监控新消息
-		log.Info("开始实时监控新消息...")
-		if err := client.StartRealTimeMonitoring(ctx, targetChatID); err != nil {
-			log.Error("实时监控失败: %v", err)
-		}
-
-	case 3:
-		// 先下载历史，再监控新消息
-		log.Info("开始下载历史媒体文件...")
-		if err := client.DownloadHistoryMedia(ctx, targetChatID); err != nil {
-			log.Error("下载历史媒体失败: %v", err)
-		} else {
-			log.Info("历史媒体下载完成，开始实时监控...")
-			if err := client.StartRealTimeMonitoring(ctx, targetChatID); err != nil {
-				log.Error("实时监控失败: %v", err)
+		if !status.Authorized {
+			// 需要登录
+			if err := client.Authenticate(ctx); err != nil {
+				return fmt.Errorf("认证失败: %w", err)
 			}
 		}
+
+		client.API = client.Client.API()
+		log.Info("成功连接到Telegram")
+
+		// 选择目标聊天
+		var targetChatID int64
+		if cfg.Chat.TargetID != 0 {
+			targetChatID = cfg.Chat.TargetID
+			log.Info("使用配置的聊天ID: %d", targetChatID)
+		} else {
+			targetChatID, err = selectChat(ctx, client, log)
+			if err != nil {
+				return fmt.Errorf("选择聊天失败: %w", err)
+			}
+		}
+
+		// 询问用户操作模式
+		mode := selectMode(log)
+
+		switch mode {
+		case 1:
+			// 只下载历史媒体
+			log.Info("开始下载历史媒体文件...")
+			if err := client.DownloadHistoryMedia(ctx, targetChatID); err != nil {
+				log.Error("下载历史媒体失败: %v", err)
+			}
+
+		case 2:
+		// 只监控新消息
+		log.Info("开始实时监控新消息...")
+		client.SetupRealTimeMonitoring(targetChatID)
+
+		case 3:
+			// 先下载历史，再监控新消息
+			log.Info("开始下载历史媒体文件...")
+			if err := client.DownloadHistoryMedia(ctx, targetChatID); err != nil {
+				log.Error("下载历史媒体失败: %v", err)
+			} else {
+			log.Info("历史媒体下载完成，开始实时监控...")
+			client.SetupRealTimeMonitoring(targetChatID)
+		}
+		}
+
+		// 保持运行直到上下文取消
+		<-ctx.Done()
+		return nil
+	})
+
+	if err != nil {
+		log.Fatal("运行失败: %v", err)
 	}
 
 	log.Info("程序退出")

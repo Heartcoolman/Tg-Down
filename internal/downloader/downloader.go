@@ -16,7 +16,11 @@ import (
 // MediaInfo 媒体文件信息
 type MediaInfo struct {
 	MessageID int
-	FileID    string
+	FileID    int64
+	AccessHash int64
+	FileReference []byte
+	ThumbSize string
+	MediaType string // "photo" or "document"
 	FileName  string
 	FileSize  int64
 	MimeType  string
