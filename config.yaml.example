@@ -13,3 +13,6 @@ chat:
   
 log:
   level: "info"  # 日志级别: debug, info, warn, error
+
+session:
+  dir: "./sessions"  # 会话文件保存目录

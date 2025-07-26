@@ -15,6 +15,7 @@ type Config struct {
 	Download DownloadConfig `yaml:"download"`
 	Chat     ChatConfig     `yaml:"chat"`
 	Log      LogConfig      `yaml:"log"`
+	Session  SessionConfig  `yaml:"session"`
 }
 
 // APIConfig Telegram API配置
@@ -39,6 +40,11 @@ type ChatConfig struct {
 // LogConfig 日志配置
 type LogConfig struct {
 	Level string `yaml:"level"`
+}
+
+// SessionConfig 会话配置
+type SessionConfig struct {
+	Dir string `yaml:"dir"`
 }
 
 // LoadConfig 加载配置文件
@@ -101,6 +107,10 @@ func LoadConfig() (*Config, error) {
 		config.Log.Level = logLevel
 	}
 
+	if sessionDir := os.Getenv("SESSION_DIR"); sessionDir != "" {
+		config.Session.Dir = sessionDir
+	}
+
 	// 设置默认值
 	if config.Download.Path == "" {
 		config.Download.Path = "./downloads"
@@ -113,6 +123,9 @@ func LoadConfig() (*Config, error) {
 	}
 	if config.Log.Level == "" {
 		config.Log.Level = "info"
+	}
+	if config.Session.Dir == "" {
+		config.Session.Dir = "./sessions"
 	}
 
 	// 验证必要配置

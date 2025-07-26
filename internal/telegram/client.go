@@ -14,39 +14,55 @@ import (
 	"tg-down/internal/config"
 	"tg-down/internal/downloader"
 	"tg-down/internal/logger"
+	"tg-down/internal/session"
 )
 
 // Client Telegram客户端包装器
 type Client struct {
-	Client     *telegram.Client
-	API        *tg.Client
-	config     *config.Config
-	logger     *logger.Logger
-	downloader *downloader.Downloader
+	Client        *telegram.Client
+	API           *tg.Client
+	config        *config.Config
+	logger        *logger.Logger
+	downloader    *downloader.Downloader
+	sessionMgr    *session.Manager
 }
 
 // New 创建新的Telegram客户端
 func New(cfg *config.Config, logger *logger.Logger) *Client {
-	tgClient := telegram.NewClient(cfg.API.ID, cfg.API.Hash, telegram.Options{})
+	// 创建会话管理器
+	sessionMgr := session.New(cfg.Session.Dir, logger)
+	
+	// 使用会话管理器创建客户端
+	tgClient := sessionMgr.CreateClientWithSession(cfg.API.ID, cfg.API.Hash, cfg.API.Phone)
+	
 	c := &Client{
-		Client: tgClient,
-		API: tgClient.API(),
-		config: cfg,
-		logger: logger,
+		Client:     tgClient,
+		API:        tgClient.API(),
+		config:     cfg,
+		logger:     logger,
+		sessionMgr: sessionMgr,
 	}
 	c.downloader = downloader.New(tgClient, cfg.Download.Path, cfg.Download.MaxConcurrent, logger)
 	c.downloader.SetDownloadFunc(c.DownloadFile)
+	
+	// 检查是否有现有会话
+	if sessionMgr.HasValidSession(cfg.API.Phone) {
+		logger.Info("发现现有会话文件，将尝试自动登录")
+	} else {
+		logger.Info("未发现会话文件，需要进行首次登录")
+	}
+	
 	return c
 }
 
 // Connect 连接到Telegram
 func (c *Client) Connect(ctx context.Context) error {
-	// 创建客户端
-	client := telegram.NewClient(c.config.API.ID, c.config.API.Hash, telegram.Options{})
+	// 使用会话管理器重新创建客户端（确保使用最新的会话）
+	client := c.sessionMgr.CreateClientWithSession(c.config.API.ID, c.config.API.Hash, c.config.API.Phone)
 	c.Client = client
 	c.API = client.API()
 
-	// 创建下载器
+	// 重新创建下载器
 	c.downloader = downloader.New(client, c.config.Download.Path, c.config.Download.MaxConcurrent, c.logger)
 	c.downloader.SetDownloadFunc(c.DownloadFile)
 
@@ -60,9 +76,13 @@ func (c *Client) Connect(ctx context.Context) error {
 
 		if !status.Authorized {
 			// 需要登录
+			c.logger.Info("当前未授权，开始登录流程...")
 			if err := c.Authenticate(ctx); err != nil {
 				return fmt.Errorf("认证失败: %w", err)
 			}
+			c.logger.Info("登录成功，会话已保存")
+		} else {
+			c.logger.Info("使用现有会话自动登录成功")
 		}
 
 		c.logger.Info("成功连接到Telegram")
@@ -113,6 +133,15 @@ func (c *Client) Authenticate(ctx context.Context) error {
 	}
 
 	c.logger.Info("认证流程完成")
+	return nil
+}
+
+// ClearSession 清除保存的会话
+func (c *Client) ClearSession() error {
+	if err := c.sessionMgr.ClearSession(c.config.API.Phone); err != nil {
+		return fmt.Errorf("清除会话失败: %w", err)
+	}
+	c.logger.Info("会话已清除，下次启动需要重新登录")
 	return nil
 }
 
@@ -337,7 +366,8 @@ if media.MediaType == "photo" {
 }
 	
 	// 分块下载文件
-	const chunkSize = 512 * 1024 // 512KB
+	// Telegram API限制：块大小必须是1024的倍数，且不能超过1MB
+	const chunkSize = 256 * 1024 // 256KB，更安全的块大小
 	var offset int64 = 0
 	
 	for offset < media.FileSize {
@@ -345,10 +375,18 @@ if media.MediaType == "photo" {
 		if remaining := media.FileSize - offset; remaining < chunkSize {
 			limit = int(remaining)
 		}
+		
+		// 确保limit是1024的倍数，且不超过1MB
+		if limit > 1024*1024 {
+			limit = 1024 * 1024
+		}
+		if limit%1024 != 0 {
+			limit = (limit/1024 + 1) * 1024
+		}
 
 		// 下载文件块
 		fileData, err := c.API.UploadGetFile(ctx, &tg.UploadGetFileRequest{
-			Precise: true,
+			Precise: false, // 设置为false可能更稳定
 			Location: location,
 			Offset:   offset,
 			Limit:    limit,
