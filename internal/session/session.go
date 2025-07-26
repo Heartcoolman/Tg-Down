@@ -34,7 +34,7 @@ func (m *Manager) GetSessionStorage(phone string) session.Storage {
 
 	// 生成会话文件名（基于手机号）
 	sessionFile := filepath.Join(m.sessionDir, fmt.Sprintf("session_%s.json", phone))
-	
+
 	// 创建文件会话存储
 	storage := &session.FileStorage{
 		Path: sessionFile,
@@ -47,7 +47,7 @@ func (m *Manager) GetSessionStorage(phone string) session.Storage {
 // HasValidSession 检查是否有有效的会话文件
 func (m *Manager) HasValidSession(phone string) bool {
 	sessionFile := filepath.Join(m.sessionDir, fmt.Sprintf("session_%s.json", phone))
-	
+
 	// 检查文件是否存在
 	if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
 		return false
@@ -81,7 +81,7 @@ func (m *Manager) CreateClientWithSession(apiID int, apiHash, phone string) *tel
 // ClearSession 清除会话文件
 func (m *Manager) ClearSession(phone string) error {
 	sessionFile := filepath.Join(m.sessionDir, fmt.Sprintf("session_%s.json", phone))
-	
+
 	if err := os.Remove(sessionFile); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("删除会话文件失败: %w", err)
 	}

@@ -159,16 +159,22 @@ downloads/
 
 ```
 tg-down/
+├── .github/
+│   ├── workflows/           # GitHub Actions工作流
+│   └── dependabot.yml      # Dependabot配置
 ├── cmd/
 │   └── main.go              # 主程序入口
 ├── internal/
 │   ├── config/              # 配置管理
 │   ├── logger/              # 日志记录
+│   ├── session/             # 会话管理
 │   ├── downloader/          # 下载器
 │   └── telegram/            # Telegram客户端
+├── sessions/                # 会话文件目录
 ├── downloads/               # 下载目录
 ├── config.yaml.example     # 配置文件模板
 ├── .env.example            # 环境变量模板
+├── .golangci.yml           # 代码质量检查配置
 ├── go.mod                  # Go模块文件
 └── README.md               # 说明文档
 ```
@@ -177,8 +183,60 @@ tg-down/
 
 - **config**: 配置文件和环境变量管理
 - **logger**: 分级日志记录
+- **session**: 持久登录会话管理
 - **downloader**: 并发媒体文件下载器
 - **telegram**: Telegram API客户端封装
+
+### CI/CD 流水线
+
+项目使用GitHub Actions实现自动化CI/CD流水线：
+
+#### 🔄 持续集成 (CI)
+- **代码质量检查**: 使用golangci-lint进行代码规范检查
+- **自动化测试**: 运行单元测试和集成测试
+- **安全扫描**: 使用Gosec进行安全漏洞扫描
+- **依赖管理**: 自动提交Go依赖信息到GitHub依赖图
+
+#### 📦 自动构建
+- **多平台构建**: 支持Linux、Windows、macOS (AMD64/ARM64)
+- **版本发布**: 基于Git标签自动创建GitHub Release
+- **校验和生成**: 为所有构建产物生成SHA256校验和
+
+#### 🤖 依赖管理
+- **Dependabot**: 自动检测并更新Go模块依赖
+- **安全更新**: 自动接收依赖安全漏洞警报
+- **依赖图**: 可视化项目依赖关系
+
+### 开发工作流
+
+1. **本地开发**:
+   ```bash
+   # 安装依赖
+   go mod download
+   
+   # 运行代码检查
+   golangci-lint run
+   
+   # 运行测试
+   go test ./...
+   
+   # 本地构建
+   go build -o tg-down cmd/main.go
+   ```
+
+2. **提交代码**:
+   - 推送到分支会触发CI检查
+   - Pull Request会运行完整的测试套件
+   - 合并到主分支会更新依赖图
+
+3. **发布版本**:
+   ```bash
+   # 创建版本标签
+   git tag v1.0.0
+   git push origin v1.0.0
+   
+   # 自动触发多平台构建和发布
+   ```
 
 ## 注意事项
 

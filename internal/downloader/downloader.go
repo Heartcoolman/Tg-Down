@@ -15,17 +15,17 @@ import (
 
 // MediaInfo 媒体文件信息
 type MediaInfo struct {
-	MessageID int
-	FileID    int64
-	AccessHash int64
+	MessageID     int
+	FileID        int64
+	AccessHash    int64
 	FileReference []byte
-	ThumbSize string
-	MediaType string // "photo" or "document"
-	FileName  string
-	FileSize  int64
-	MimeType  string
-	ChatID    int64
-	Date      time.Time
+	ThumbSize     string
+	MediaType     string // "photo" or "document"
+	FileName      string
+	FileSize      int64
+	MimeType      string
+	ChatID        int64
+	Date          time.Time
 }
 
 // Downloader 下载器
@@ -69,10 +69,19 @@ func (d *Downloader) SetDownloadFunc(fn func(context.Context, *MediaInfo, string
 }
 
 // GetStats 获取下载统计
-func (d *Downloader) GetStats() DownloadStats {
+func (d *Downloader) GetStats() *DownloadStats {
 	d.stats.mu.RLock()
 	defer d.stats.mu.RUnlock()
-	return *d.stats
+
+	// 创建一个副本来避免锁复制
+	return &DownloadStats{
+		Total:          d.stats.Total,
+		Downloaded:     d.stats.Downloaded,
+		Failed:         d.stats.Failed,
+		Skipped:        d.stats.Skipped,
+		TotalSize:      d.stats.TotalSize,
+		DownloadedSize: d.stats.DownloadedSize,
+	}
 }
 
 // updateStats 更新统计信息
@@ -105,7 +114,7 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 	fileName := media.FileName
 	if fileName == "" {
 		ext := d.getFileExtension(media.MimeType)
-		fileName = fmt.Sprintf("file_%d_%s%s", media.MessageID, media.FileID, ext)
+		fileName = fmt.Sprintf("file_%d_%d%s", media.MessageID, media.FileID, ext)
 	}
 	filePath := filepath.Join(chatDir, fileName)
 

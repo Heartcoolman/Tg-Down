@@ -1,0 +1,18 @@
+api:
+  id: 12345
+  hash: "test_api_hash"
+  phone: "+1234567890"
+
+download:
+  path: "./test_downloads"
+  max_concurrent: 3
+  batch_size: 50
+
+session:
+  dir: "./test_sessions"
+
+chat:
+  target_id: 0
+
+log:
+  level: "debug"
