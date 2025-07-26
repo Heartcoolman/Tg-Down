@@ -19,22 +19,22 @@ import (
 
 // Client Telegram客户端包装器
 type Client struct {
-	Client        *telegram.Client
-	API           *tg.Client
-	config        *config.Config
-	logger        *logger.Logger
-	downloader    *downloader.Downloader
-	sessionMgr    *session.Manager
+	Client     *telegram.Client
+	API        *tg.Client
+	config     *config.Config
+	logger     *logger.Logger
+	downloader *downloader.Downloader
+	sessionMgr *session.Manager
 }
 
 // New 创建新的Telegram客户端
 func New(cfg *config.Config, logger *logger.Logger) *Client {
 	// 创建会话管理器
 	sessionMgr := session.New(cfg.Session.Dir, logger)
-	
+
 	// 使用会话管理器创建客户端
 	tgClient := sessionMgr.CreateClientWithSession(cfg.API.ID, cfg.API.Hash, cfg.API.Phone)
-	
+
 	c := &Client{
 		Client:     tgClient,
 		API:        tgClient.API(),
@@ -44,14 +44,14 @@ func New(cfg *config.Config, logger *logger.Logger) *Client {
 	}
 	c.downloader = downloader.New(tgClient, cfg.Download.Path, cfg.Download.MaxConcurrent, logger)
 	c.downloader.SetDownloadFunc(c.DownloadFile)
-	
+
 	// 检查是否有现有会话
 	if sessionMgr.HasValidSession(cfg.API.Phone) {
 		logger.Info("发现现有会话文件，将尝试自动登录")
 	} else {
 		logger.Info("未发现会话文件，需要进行首次登录")
 	}
-	
+
 	return c
 }
 
@@ -210,14 +210,14 @@ func (c *Client) GetMediaMessages(ctx context.Context, chatID int64, limit int, 
 
 	// 获取消息历史
 	history, err := c.API.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
-		Peer:      inputPeer,
-		OffsetID:  offsetID,
+		Peer:       inputPeer,
+		OffsetID:   offsetID,
 		OffsetDate: 0,
-		AddOffset: 0,
-		Limit:     limit,
-		MaxID:     0,
-		MinID:     0,
-		Hash:      0,
+		AddOffset:  0,
+		Limit:      limit,
+		MaxID:      0,
+		MinID:      0,
+		Hash:       0,
 	})
 
 	if err != nil {
@@ -267,17 +267,17 @@ func (c *Client) extractMediaInfo(msg tg.MessageClass, chatID int64) *downloader
 	case *tg.MessageMediaPhoto:
 		if photo, ok := media.Photo.(*tg.Photo); ok {
 			mediaInfo = &downloader.MediaInfo{
-				MessageID: message.ID,
-				FileID:    photo.ID,
-				AccessHash: photo.AccessHash,
+				MessageID:     message.ID,
+				FileID:        photo.ID,
+				AccessHash:    photo.AccessHash,
 				FileReference: photo.FileReference,
-				MediaType: "photo",
-				FileName:  fmt.Sprintf("photo_%d.jpg", photo.ID),
-				ChatID:    chatID,
-				Date:      time.Unix(int64(message.Date), 0),
-				MimeType:  "image/jpeg",
+				MediaType:     "photo",
+				FileName:      fmt.Sprintf("photo_%d.jpg", photo.ID),
+				ChatID:        chatID,
+				Date:          time.Unix(int64(message.Date), 0),
+				MimeType:      "image/jpeg",
 			}
-			
+
 			// 获取最大尺寸和ThumbSize
 			var maxSize int
 			var thumbType string
@@ -307,7 +307,7 @@ func (c *Client) extractMediaInfo(msg tg.MessageClass, chatID int64) *downloader
 	case *tg.MessageMediaDocument:
 		if doc, ok := media.Document.(*tg.Document); ok {
 			fileName := fmt.Sprintf("document_%d", doc.ID)
-			
+
 			// 尝试获取文件名
 			for _, attr := range doc.Attributes {
 				if filename, ok := attr.(*tg.DocumentAttributeFilename); ok {
@@ -317,17 +317,17 @@ func (c *Client) extractMediaInfo(msg tg.MessageClass, chatID int64) *downloader
 			}
 
 			mediaInfo = &downloader.MediaInfo{
-				MessageID: message.ID,
-				FileID:    doc.ID,
-				AccessHash: doc.AccessHash,
+				MessageID:     message.ID,
+				FileID:        doc.ID,
+				AccessHash:    doc.AccessHash,
 				FileReference: doc.FileReference,
-				MediaType: "document",
-				FileName:  fileName,
-				FileSize:  doc.Size,
-				ThumbSize: "",
-				ChatID:    chatID,
-				Date:      time.Unix(int64(message.Date), 0),
-				MimeType:  doc.MimeType,
+				MediaType:     "document",
+				FileName:      fileName,
+				FileSize:      doc.Size,
+				ThumbSize:     "",
+				ChatID:        chatID,
+				Date:          time.Unix(int64(message.Date), 0),
+				MimeType:      doc.MimeType,
 			}
 		}
 	}
@@ -346,36 +346,36 @@ func (c *Client) DownloadFile(ctx context.Context, media *downloader.MediaInfo, 
 	defer file.Close()
 
 	// 根据媒体类型构建下载位置
-var location tg.InputFileLocationClass
-if media.MediaType == "photo" {
-	location = &tg.InputPhotoFileLocation{
-		ID:            media.FileID,
-		AccessHash:    media.AccessHash,
-		FileReference: media.FileReference,
-		ThumbSize:     media.ThumbSize,
+	var location tg.InputFileLocationClass
+	if media.MediaType == "photo" {
+		location = &tg.InputPhotoFileLocation{
+			ID:            media.FileID,
+			AccessHash:    media.AccessHash,
+			FileReference: media.FileReference,
+			ThumbSize:     media.ThumbSize,
+		}
+	} else if media.MediaType == "document" {
+		location = &tg.InputDocumentFileLocation{
+			ID:            media.FileID,
+			AccessHash:    media.AccessHash,
+			FileReference: media.FileReference,
+			ThumbSize:     media.ThumbSize,
+		}
+	} else {
+		return errors.New("unsupported media type")
 	}
-} else if media.MediaType == "document" {
-	location = &tg.InputDocumentFileLocation{
-		ID:            media.FileID,
-		AccessHash:    media.AccessHash,
-		FileReference: media.FileReference,
-		ThumbSize:     media.ThumbSize,
-	}
-} else {
-	return errors.New("unsupported media type")
-}
-	
+
 	// 分块下载文件
 	// Telegram API限制：块大小必须是1024的倍数，且不能超过1MB
 	const chunkSize = 256 * 1024 // 256KB，更安全的块大小
 	var offset int64 = 0
-	
+
 	for offset < media.FileSize {
 		limit := chunkSize
 		if remaining := media.FileSize - offset; remaining < chunkSize {
 			limit = int(remaining)
 		}
-		
+
 		// 确保limit是1024的倍数，且不超过1MB
 		if limit > 1024*1024 {
 			limit = 1024 * 1024
@@ -386,7 +386,7 @@ if media.MediaType == "photo" {
 
 		// 下载文件块
 		fileData, err := c.API.UploadGetFile(ctx, &tg.UploadGetFileRequest{
-			Precise: false, // 设置为false可能更稳定
+			Precise:  false, // 设置为false可能更稳定
 			Location: location,
 			Offset:   offset,
 			Limit:    limit,

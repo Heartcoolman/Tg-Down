@@ -92,9 +92,9 @@ func main() {
 			}
 
 		case 2:
-		// 只监控新消息
-		log.Info("开始实时监控新消息...")
-		client.SetupRealTimeMonitoring(targetChatID)
+			// 只监控新消息
+			log.Info("开始实时监控新消息...")
+			client.SetupRealTimeMonitoring(targetChatID)
 
 		case 3:
 			// 先下载历史，再监控新消息
@@ -102,9 +102,9 @@ func main() {
 			if err := client.DownloadHistoryMedia(ctx, targetChatID); err != nil {
 				log.Error("下载历史媒体失败: %v", err)
 			} else {
-			log.Info("历史媒体下载完成，开始实时监控...")
-			client.SetupRealTimeMonitoring(targetChatID)
-		}
+				log.Info("历史媒体下载完成，开始实时监控...")
+				client.SetupRealTimeMonitoring(targetChatID)
+			}
 		}
 
 		// 保持运行直到上下文取消
@@ -176,7 +176,7 @@ func selectMode(log *logger.Logger) int {
 // clearSessionAndExit 清除会话文件并退出
 func clearSessionAndExit() {
 	fmt.Println("正在清除会话文件...")
-	
+
 	// 加载配置以获取会话目录
 	cfg, err := config.LoadConfig()
 	if err != nil {
@@ -187,11 +187,11 @@ func clearSessionAndExit() {
 	// 创建临时客户端以使用清除会话功能
 	log := logger.New("info")
 	client := telegram.New(cfg, log)
-	
+
 	if err := client.ClearSession(); err != nil {
 		fmt.Printf("清除会话失败: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	fmt.Println("会话文件已清除，下次启动将需要重新登录")
 }
