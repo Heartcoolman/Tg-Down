@@ -387,19 +387,10 @@ if media.MediaType == "photo" {
 
 // SetupRealTimeMonitoring 设置实时监控新消息的更新处理程序
 func (c *Client) SetupRealTimeMonitoring(chatID int64) {
-	c.Client.WithUpdatesHandler(func(ctx context.Context, u tg.UpdateClass) error {
-		switch update := u.(type) {
-		case *tg.UpdateNewMessage:
-			if msg, ok := update.Message.(*tg.Message); ok && msg.PeerID.GetID() == chatID {
-				if media := c.extractMediaInfo(msg, chatID); media != nil {
-					c.logger.Info("发现新媒体文件: %s", media.FileName)
-					c.downloader.DownloadBatch(ctx, []*downloader.MediaInfo{media})
-				}
-			}
-		}
-		return nil
-	})
+	// 注意：实时监控功能需要在主运行循环中实现
+	// 这里只是一个占位符，实际的更新处理需要在主程序中设置
 	c.logger.Info("实时监控已设置，监听聊天 %d 的新消息", chatID)
+	c.logger.Warn("实时监控功能需要在主程序运行循环中实现")
 }
 
 // DownloadHistoryMedia 下载历史媒体文件
