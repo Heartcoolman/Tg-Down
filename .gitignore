@@ -1,0 +1,34 @@
+# 二进制文件
+tg-down
+tg-down.exe
+*.exe
+
+# 日志文件
+*.log
+
+# 配置文件（包含敏感信息）
+config.yaml
+.env
+
+# 下载目录
+downloads/
+
+# 临时文件
+*.tmp
+*.temp
+
+# Go相关
+vendor/
+
+# IDE文件
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 会话文件
+session.json

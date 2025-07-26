@@ -1,0 +1,15 @@
+api:
+  id: 0  # 你的API ID
+  hash: ""  # 你的API Hash
+  phone: ""  # 你的手机号
+
+download:
+  path: "./downloads"  # 下载路径
+  max_concurrent: 5    # 最大并发下载数
+  batch_size: 100      # 批量处理大小
+  
+chat:
+  target_id: 0  # 目标群组ID (可选)
+  
+log:
+  level: "info"  # 日志级别: debug, info, warn, error
