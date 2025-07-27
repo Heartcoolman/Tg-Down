@@ -27,7 +27,7 @@ func New(sessionDir string, logger *logger.Logger) *Manager {
 // GetSessionStorage 获取会话存储
 func (m *Manager) GetSessionStorage(phone string) session.Storage {
 	// 确保会话目录存在
-	if err := os.MkdirAll(m.sessionDir, 0755); err != nil {
+	if err := os.MkdirAll(m.sessionDir, 0750); err != nil {
 		m.logger.Error("创建会话目录失败: %v", err)
 		return nil
 	}

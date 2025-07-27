@@ -104,7 +104,7 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 
 	// 创建下载目录
 	chatDir := filepath.Join(d.downloadPath, fmt.Sprintf("chat_%d", media.ChatID))
-	if err := os.MkdirAll(chatDir, 0755); err != nil {
+	if err := os.MkdirAll(chatDir, 0750); err != nil {
 		d.logger.Error("创建目录失败: %v", err)
 		d.updateStats(false, 0)
 		return err
@@ -154,7 +154,9 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 		// 下载完成后重命名文件
 		if err := os.Rename(tempPath, filePath); err != nil {
 			d.logger.Error("重命名文件失败 %s: %v", fileName, err)
-			os.Remove(tempPath) // 清理临时文件
+			if removeErr := os.Remove(tempPath); removeErr != nil {
+				d.logger.Error("清理临时文件失败 %s: %v", tempPath, removeErr)
+			}
 			d.updateStats(false, 0)
 			return err
 		}
