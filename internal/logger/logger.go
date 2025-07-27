@@ -1,3 +1,5 @@
+// Package logger provides logging utilities for Tg-Down application.
+// It supports different log levels and formatted output with timestamps.
 package logger
 
 import (
@@ -47,7 +49,7 @@ func New(level string) *Logger {
 }
 
 // formatMessage 格式化日志消息
-func (l *Logger) formatMessage(level string, msg string) string {
+func (l *Logger) formatMessage(level, msg string) string {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	return fmt.Sprintf("[%s] %s: %s", timestamp, level, msg)
 }

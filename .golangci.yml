@@ -13,6 +13,19 @@ output:
   print-linter-name: true
 
 linters-settings:
+  depguard:
+    rules:
+      main:
+        files:
+          - "!**/*_test.go"
+        allow:
+          - $gostd
+          - github.com/gotd/td
+          - tg-down/internal/config
+          - tg-down/internal/logger
+          - tg-down/internal/telegram
+          - tg-down/internal/downloader
+          - tg-down/internal/session
   govet:
     check-shadowing: true
   golint:
@@ -45,6 +58,7 @@ linters-settings:
       - octalLiteral
       - whyNoLint
       - wrapperFunc
+      - exitAfterDefer
 
 linters:
   enable:
