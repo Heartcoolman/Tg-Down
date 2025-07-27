@@ -24,11 +24,15 @@ const (
 	TelegramAPIHost = "api.telegram.org"
 	// TelegramAPIPort is the standard Telegram API port
 	TelegramAPIPort = "443"
+	// SeparatorLength is the length of separator line
+	SeparatorLength = 50
+	// BadRequestCode is the HTTP status code for bad request
+	BadRequestCode = 400
 )
 
 func main() {
 	fmt.Println("🔍 Telegram 连接测试工具")
-	fmt.Println(strings.Repeat("=", 50))
+	fmt.Println(strings.Repeat("=", SeparatorLength))
 
 	// 加载配置
 	cfg, err := config.LoadConfig()
@@ -47,10 +51,9 @@ func main() {
 	if success {
 		fmt.Println("\n✅ 所有连接测试通过！可以安全运行主程序。")
 		os.Exit(0)
-	} else {
-		fmt.Println("\n❌ 连接测试失败！请检查网络连接和防火墙设置。")
-		os.Exit(1)
 	}
+	fmt.Println("\n❌ 连接测试失败！请检查网络连接和防火墙设置。")
+	os.Exit(1)
 }
 
 // runConnectionTests 执行所有连接测试
@@ -105,24 +108,40 @@ func testTCPConnection() error {
 	if err != nil {
 		return fmt.Errorf("无法建立 TCP 连接到 %s:%s: %w", TelegramAPIHost, TelegramAPIPort, err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			fmt.Printf("failed to close connection: %v\n", err)
+		}
+	}()
 
 	return nil
 }
 
 // testHTTPConnection 测试 HTTP/HTTPS 连接
 func testHTTPConnection() error {
+	ctx, cancel := context.WithTimeout(context.Background(), TestTimeout)
+	defer cancel()
+
 	client := &http.Client{
 		Timeout: TestTimeout,
 	}
 
-	resp, err := client.Get("https://" + TelegramAPIHost)
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://"+TelegramAPIHost, nil)
+	if err != nil {
+		return fmt.Errorf("无法创建 HTTP 请求: %w", err)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("无法建立 HTTPS 连接: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			fmt.Printf("failed to close response body: %v\n", err)
+		}
+	}()
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= BadRequestCode {
 		return fmt.Errorf("HTTP 响应错误: %d %s", resp.StatusCode, resp.Status)
 	}
 
@@ -130,7 +149,7 @@ func testHTTPConnection() error {
 }
 
 // testTelegramAPIConnection 测试 Telegram API 连接
-func testTelegramAPIConnection(cfg *config.Config, log *logger.Logger) error {
+func testTelegramAPIConnection(cfg *config.Config, _ *logger.Logger) error {
 	ctx, cancel := context.WithTimeout(context.Background(), TestTimeout)
 	defer cancel()
 
@@ -147,14 +166,14 @@ func testTelegramAPIConnection(cfg *config.Config, log *logger.Logger) error {
 		// 尝试获取配置信息（这是一个轻量级的 API 调用）
 		_, configErr := api.HelpGetConfig(ctx)
 		if configErr != nil {
-			return fmt.Errorf("无法获取 Telegram 配置: %w", configErr)
+			return fmt.Errorf("无法获取 telegram 配置: %w", configErr)
 		}
 
 		return nil
 	})
 
 	if err != nil {
-		return fmt.Errorf("Telegram API 连接失败: %w", err)
+		return fmt.Errorf("telegram API 连接失败: %w", err)
 	}
 
 	return nil
