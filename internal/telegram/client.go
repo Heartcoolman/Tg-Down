@@ -511,7 +511,7 @@ func (c *Client) calculateChunkLimit(chunkSize int, remaining int64) int {
 func (c *Client) writeFileChunk(file *os.File, fileData tg.UploadFileClass) (int, error) {
 	switch fd := fileData.(type) {
 	case *tg.UploadFile:
-		n, err := file.Write(fd.Bytes)
+		_, err := file.Write(fd.Bytes)
 		if err != nil {
 			return 0, fmt.Errorf("写入文件失败: %w", err)
 		}
