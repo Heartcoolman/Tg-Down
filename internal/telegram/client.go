@@ -208,7 +208,7 @@ func (c *Client) extractChatInfo(chat tg.ChatClass) *ChatInfo {
 }
 
 // GetMediaMessages 获取包含媒体的消息
-func (c *Client) GetMediaMessages(ctx context.Context, chatID int64, limit int, offsetID int) ([]*downloader.MediaInfo, error) {
+func (c *Client) GetMediaMessages(ctx context.Context, chatID int64, limit, offsetID int) ([]*downloader.MediaInfo, error) {
 	// 构建输入对等体
 	inputPeer := &tg.InputPeerChat{ChatID: chatID}
 
@@ -316,7 +316,7 @@ func (c *Client) findLargestPhotoSize(sizes []tg.PhotoSizeClass) (maxSize int, t
 }
 
 // getPhotoSizeInfo 获取照片尺寸信息
-func (c *Client) getPhotoSizeInfo(size tg.PhotoSizeClass) (int, string) {
+func (c *Client) getPhotoSizeInfo(size tg.PhotoSizeClass) (width int, url string) {
 	switch s := size.(type) {
 	case *tg.PhotoSize:
 		return s.Size, s.Type
@@ -377,8 +377,9 @@ func (c *Client) DownloadFile(ctx context.Context, media *downloader.MediaInfo, 
 		return err
 	}
 	defer func() {
-		if err := file.Close(); err != nil {
-			c.logger.Error("关闭文件失败: %v", err)
+		closeErr := file.Close()
+		if closeErr != nil {
+			c.logger.Error("关闭文件失败: %v", closeErr)
 		}
 	}()
 
@@ -461,7 +462,13 @@ func (c *Client) buildFileLocation(media *downloader.MediaInfo) (tg.InputFileLoc
 }
 
 // downloadFileChunks 分块下载文件
-func (c *Client) downloadFileChunks(ctx context.Context, file *os.File, location tg.InputFileLocationClass, fileSize int64, tempPath string) error {
+func (c *Client) downloadFileChunks(
+	ctx context.Context,
+	file *os.File,
+	location tg.InputFileLocationClass,
+	fileSize int64,
+	tempPath string,
+) error {
 	const chunkSize = 256 * 1024 // 256KB，更安全的块大小
 	var offset int64 = 0
 

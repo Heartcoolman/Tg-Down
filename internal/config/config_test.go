@@ -6,7 +6,6 @@ import (
 )
 
 func TestLoadConfig(t *testing.T) {
-	// 测试配置加载功能
 	// 设置测试环境变量
 	if err := os.Setenv("API_ID", "12345"); err != nil {
 		t.Fatalf("Failed to set API_ID: %v", err)
@@ -46,7 +45,6 @@ func TestLoadConfig(t *testing.T) {
 }
 
 func TestLoadConfigWithDefaults(t *testing.T) {
-	// 测试默认值设置
 	if err := os.Setenv("API_ID", "12345"); err != nil {
 		t.Fatalf("Failed to set API_ID: %v", err)
 	}
@@ -92,7 +90,6 @@ func TestLoadConfigWithDefaults(t *testing.T) {
 }
 
 func TestLoadConfigMissingRequired(t *testing.T) {
-	// 测试缺少必要配置的情况
 	// 清除所有相关环境变量
 	if err := os.Unsetenv("API_ID"); err != nil {
 		t.Errorf("Failed to unset API_ID: %v", err)
@@ -111,7 +108,6 @@ func TestLoadConfigMissingRequired(t *testing.T) {
 }
 
 func TestSaveConfig(t *testing.T) {
-	// 测试保存配置
 	config := &Config{
 		API: APIConfig{
 			ID:    12345,
