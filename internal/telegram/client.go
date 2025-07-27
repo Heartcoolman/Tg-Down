@@ -551,10 +551,145 @@ func (c *Client) finalizeTempFile(tempPath, filePath string) error {
 
 // SetupRealTimeMonitoring 设置实时监控新消息的更新处理程序
 func (c *Client) SetupRealTimeMonitoring(chatID int64) {
-	// 注意：实时监控功能需要在主运行循环中实现
-	// 这里只是一个占位符，实际的更新处理需要在主程序中设置
-	c.logger.Info("实时监控已设置，监听聊天 %d 的新消息", chatID)
-	c.logger.Warn("实时监控功能需要在主程序运行循环中实现")
+	c.logger.Info("正在设置实时监控，监听聊天 %d 的新消息", chatID)
+	
+	// 创建更新调度器
+	dispatcher := tg.NewUpdateDispatcher()
+	
+	// 处理新消息更新
+	dispatcher.OnNewMessage(func(ctx context.Context, e tg.Entities, update *tg.UpdateNewMessage) error {
+		return c.handleNewMessage(ctx, update, chatID)
+	})
+	
+	// 处理频道新消息更新
+	dispatcher.OnNewChannelMessage(func(ctx context.Context, e tg.Entities, update *tg.UpdateNewChannelMessage) error {
+		return c.handleNewChannelMessage(ctx, update, chatID)
+	})
+	
+	// 使用会话管理器重新创建客户端，设置更新处理器
+	storage := c.sessionMgr.GetSessionStorage(c.config.API.Phone)
+	if storage == nil {
+		c.logger.Error("无法获取会话存储")
+		return
+	}
+	
+	options := telegram.Options{
+		SessionStorage: storage,
+		UpdateHandler:  dispatcher,
+	}
+	
+	// 创建新的客户端实例
+	newClient := telegram.NewClient(c.config.API.ID, c.config.API.Hash, options)
+	c.Client = newClient
+	c.API = newClient.API()
+	
+	// 重新创建下载器
+	c.downloader = downloader.New(newClient, c.config.Download.Path, c.config.Download.MaxConcurrent, c.logger)
+	c.downloader.SetDownloadFunc(c.DownloadFile)
+	
+	c.logger.Info("实时监控已成功设置")
+}
+
+// handleNewMessage 处理新消息
+func (c *Client) handleNewMessage(ctx context.Context, update *tg.UpdateNewMessage, targetChatID int64) error {
+	message, ok := update.Message.(*tg.Message)
+	if !ok {
+		return nil
+	}
+	
+	// 检查是否来自目标聊天
+	if !c.isFromTargetChat(message, targetChatID) {
+		return nil
+	}
+	
+	// 检查消息是否包含媒体
+	if message.Media == nil {
+		return nil
+	}
+	
+	c.logger.Info("检测到新媒体消息，消息ID: %d", message.ID)
+	
+	// 提取媒体信息
+	mediaInfo := c.extractMediaInfo(message, targetChatID)
+	if mediaInfo == nil {
+		return nil
+	}
+	
+	// 下载媒体文件
+	go func() {
+		downloadCtx := context.Background()
+		c.downloader.DownloadSingle(downloadCtx, mediaInfo)
+		c.logger.Info("新媒体文件下载完成: %s", mediaInfo.FileName)
+	}()
+	
+	return nil
+}
+
+// handleNewChannelMessage 处理频道新消息
+func (c *Client) handleNewChannelMessage(ctx context.Context, update *tg.UpdateNewChannelMessage, targetChatID int64) error {
+	message, ok := update.Message.(*tg.Message)
+	if !ok {
+		return nil
+	}
+	
+	// 检查是否来自目标频道
+	if message.PeerID == nil {
+		return nil
+	}
+	
+	var chatID int64
+	switch peer := message.PeerID.(type) {
+	case *tg.PeerChannel:
+		chatID = peer.ChannelID
+	case *tg.PeerChat:
+		chatID = peer.ChatID
+	default:
+		return nil
+	}
+	
+	if chatID != targetChatID {
+		return nil
+	}
+	
+	// 检查消息是否包含媒体
+	if message.Media == nil {
+		return nil
+	}
+	
+	c.logger.Info("检测到频道新媒体消息，消息ID: %d", message.ID)
+	
+	// 提取媒体信息
+	mediaInfo := c.extractMediaInfo(message, targetChatID)
+	if mediaInfo == nil {
+		return nil
+	}
+	
+	// 下载媒体文件
+	go func() {
+		downloadCtx := context.Background()
+		c.downloader.DownloadSingle(downloadCtx, mediaInfo)
+		c.logger.Info("新媒体文件下载完成: %s", mediaInfo.FileName)
+	}()
+	
+	return nil
+}
+
+// isFromTargetChat 检查消息是否来自目标聊天
+func (c *Client) isFromTargetChat(message *tg.Message, targetChatID int64) bool {
+	if message.PeerID == nil {
+		return false
+	}
+	
+	switch peer := message.PeerID.(type) {
+	case *tg.PeerChannel:
+		return peer.ChannelID == targetChatID
+	case *tg.PeerChat:
+		return peer.ChatID == targetChatID
+	case *tg.PeerUser:
+		return peer.UserID == targetChatID
+	default:
+		return false
+	}
 }
 
 // DownloadHistoryMedia 下载历史媒体文件
