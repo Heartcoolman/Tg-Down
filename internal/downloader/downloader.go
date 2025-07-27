@@ -1,3 +1,5 @@
+// Package downloader provides media file downloading functionality for Tg-Down application.
+// It supports concurrent downloads with progress tracking and statistics.
 package downloader
 
 import (
@@ -5,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,19 +16,26 @@ import (
 	"tg-down/internal/logger"
 )
 
+const (
+	// DirectoryPermission is the permission mode for creating directories
+	DirectoryPermission = 0750
+	// DownloadDelayMs is the simulated download delay in milliseconds
+	DownloadDelayMs = 100
+)
+
 // MediaInfo 媒体文件信息
 type MediaInfo struct {
-	MessageID int
-	FileID    int64
-	AccessHash int64
+	MessageID     int
+	FileID        int64
+	AccessHash    int64
 	FileReference []byte
-	ThumbSize string
-	MediaType string // "photo" or "document"
-	FileName  string
-	FileSize  int64
-	MimeType  string
-	ChatID    int64
-	Date      time.Time
+	ThumbSize     string
+	MediaType     string // "photo" or "document"
+	FileName      string
+	FileSize      int64
+	MimeType      string
+	ChatID        int64
+	Date          time.Time
 }
 
 // Downloader 下载器
@@ -69,10 +79,19 @@ func (d *Downloader) SetDownloadFunc(fn func(context.Context, *MediaInfo, string
 }
 
 // GetStats 获取下载统计
-func (d *Downloader) GetStats() DownloadStats {
+func (d *Downloader) GetStats() *DownloadStats {
 	d.stats.mu.RLock()
 	defer d.stats.mu.RUnlock()
-	return *d.stats
+
+	// 创建一个副本来避免锁复制
+	return &DownloadStats{
+		Total:          d.stats.Total,
+		Downloaded:     d.stats.Downloaded,
+		Failed:         d.stats.Failed,
+		Skipped:        d.stats.Skipped,
+		TotalSize:      d.stats.TotalSize,
+		DownloadedSize: d.stats.DownloadedSize,
+	}
 }
 
 // updateStats 更新统计信息
@@ -95,7 +114,7 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 
 	// 创建下载目录
 	chatDir := filepath.Join(d.downloadPath, fmt.Sprintf("chat_%d", media.ChatID))
-	if err := os.MkdirAll(chatDir, 0755); err != nil {
+	if err := os.MkdirAll(chatDir, DirectoryPermission); err != nil {
 		d.logger.Error("创建目录失败: %v", err)
 		d.updateStats(false, 0)
 		return err
@@ -105,9 +124,19 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 	fileName := media.FileName
 	if fileName == "" {
 		ext := d.getFileExtension(media.MimeType)
-		fileName = fmt.Sprintf("file_%d_%s%s", media.MessageID, media.FileID, ext)
+		fileName = fmt.Sprintf("file_%d_%d%s", media.MessageID, media.FileID, ext)
 	}
+
+	// 清理文件名以防止路径遍历攻击
+	fileName = d.sanitizeFileName(fileName)
 	filePath := filepath.Join(chatDir, fileName)
+
+	// 验证文件路径安全性
+	if !d.isSafePath(filePath, d.downloadPath) {
+		d.logger.Error("不安全的文件路径: %s", filePath)
+		d.updateStats(false, 0)
+		return fmt.Errorf("unsafe file path: %s", filePath)
+	}
 
 	// 检查文件是否已存在
 	if _, err := os.Stat(filePath); err == nil {
@@ -130,22 +159,43 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 	} else {
 		// 创建临时文件作为占位符
 		tempPath := filePath + ".tmp"
-		file, err := os.Create(tempPath)
+
+		// 验证临时文件路径安全性
+		if !d.isSafePath(tempPath, d.downloadPath) {
+			d.logger.Error("不安全的临时文件路径: %s", tempPath)
+			d.updateStats(false, 0)
+			return fmt.Errorf("unsafe temp file path: %s", tempPath)
+		}
+
+		// 额外的路径安全检查
+		cleanTempPath := filepath.Clean(tempPath)
+		if strings.Contains(cleanTempPath, "..") || !strings.HasPrefix(cleanTempPath, filepath.Clean(d.downloadPath)) {
+			d.logger.Error("检测到不安全的路径: %s", tempPath)
+			d.updateStats(false, 0)
+			return fmt.Errorf("detected unsafe path: %s", tempPath)
+		}
+
+		file, err := os.Create(cleanTempPath)
 		if err != nil {
 			d.logger.Error("创建临时文件失败 %s: %v", fileName, err)
 			d.updateStats(false, 0)
 			return err
 		}
-		file.Close()
+		closeErr := file.Close()
+		if closeErr != nil {
+			d.logger.Error("关闭临时文件失败 %s: %v", fileName, closeErr)
+		}
 
 		// 模拟下载过程
 		d.logger.Debug("正在下载文件: %s", fileName)
-		time.Sleep(100 * time.Millisecond) // 模拟下载时间
+		time.Sleep(DownloadDelayMs * time.Millisecond) // 模拟下载时间
 
 		// 下载完成后重命名文件
 		if err := os.Rename(tempPath, filePath); err != nil {
 			d.logger.Error("重命名文件失败 %s: %v", fileName, err)
-			os.Remove(tempPath) // 清理临时文件
+			if removeErr := os.Remove(tempPath); removeErr != nil {
+				d.logger.Error("清理临时文件失败 %s: %v", tempPath, removeErr)
+			}
 			d.updateStats(false, 0)
 			return err
 		}
@@ -154,6 +204,51 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 	d.logger.Info("下载完成: %s", fileName)
 	d.updateStats(true, media.FileSize)
 	return nil
+}
+
+// sanitizeFileName 清理文件名，移除危险字符
+func (d *Downloader) sanitizeFileName(fileName string) string {
+	// 移除路径分隔符和其他危险字符
+	fileName = strings.ReplaceAll(fileName, "/", "_")
+	fileName = strings.ReplaceAll(fileName, "\\", "_")
+	fileName = strings.ReplaceAll(fileName, "..", "_")
+	fileName = strings.ReplaceAll(fileName, ":", "_")
+	fileName = strings.ReplaceAll(fileName, "*", "_")
+	fileName = strings.ReplaceAll(fileName, "?", "_")
+	fileName = strings.ReplaceAll(fileName, "\"", "_")
+	fileName = strings.ReplaceAll(fileName, "<", "_")
+	fileName = strings.ReplaceAll(fileName, ">", "_")
+	fileName = strings.ReplaceAll(fileName, "|", "_")
+
+	// 确保文件名不为空
+	if fileName == "" || fileName == "." || fileName == ".." {
+		fileName = "unnamed_file"
+	}
+
+	return fileName
+}
+
+// isSafePath 验证文件路径是否安全（在指定的基础目录内）
+func (d *Downloader) isSafePath(filePath, basePath string) bool {
+	// 获取绝对路径
+	absFilePath, err := filepath.Abs(filePath)
+	if err != nil {
+		return false
+	}
+
+	absBasePath, err := filepath.Abs(basePath)
+	if err != nil {
+		return false
+	}
+
+	// 检查文件路径是否在基础路径内
+	relPath, err := filepath.Rel(absBasePath, absFilePath)
+	if err != nil {
+		return false
+	}
+
+	// 如果相对路径包含".."，说明试图访问基础目录外的文件
+	return !strings.HasPrefix(relPath, "..") && !strings.Contains(relPath, "/..")
 }
 
 // getFileExtension 根据MIME类型获取文件扩展名

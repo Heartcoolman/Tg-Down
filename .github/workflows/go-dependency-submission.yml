@@ -1,0 +1,48 @@
+name: Go Dependency Submission
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+# API需要对仓库的写权限来提交依赖信息
+permissions:
+  contents: write
+
+# 配置Go和Go模块的环境变量
+env:
+  GOPROXY: 'https://proxy.golang.org,direct'
+  GOPRIVATE: ''
+  GO_VERSION: '1.21'
+
+jobs:
+  go-dependency-submission:
+    runs-on: ubuntu-latest
+    name: Submit Go Dependencies
+    steps:
+      - name: 'Checkout Repository'
+        uses: actions/checkout@v4
+
+      - name: 'Setup Go'
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: 'Download Dependencies'
+        run: go mod download
+
+      - name: 'Verify Dependencies'
+        run: go mod verify
+
+      - name: 'Run Go Dependency Submission'
+        uses: actions/go-dependency-submission@v2
+        with:
+          # 指定go.mod文件路径
+          go-mod-path: go.mod
+          # 指定构建目标（包含main函数的文件）
+          go-build-target: cmd/main.go
