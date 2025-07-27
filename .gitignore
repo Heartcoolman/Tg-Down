@@ -30,5 +30,7 @@ vendor/
 .DS_Store
 Thumbs.db
 
-# 会话文件
-session.json
+# 会话文件（包含敏感登录信息）
+sessions/
+session*.json
+*.session
