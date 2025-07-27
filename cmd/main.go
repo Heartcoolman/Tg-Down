@@ -14,6 +14,11 @@ import (
 	"tg-down/internal/logger"
 	"tg-down/internal/telegram"
 )
+const (
+    ModeDownloadHistory      = 1
+    ModeMonitorNewMessages   = 2
+    ModeDownloadAndMonitor   = 3
+)
 
 func main() {
 	// 检查命令行参数
@@ -87,7 +92,7 @@ func main() {
 		mode := selectMode(log)
 
 		switch mode {
-		case 1:
+		case ModeDownloadHistory:
 			// 只下载历史媒体
 			log.Info("开始下载历史媒体文件...")
 			downloadErr := client.DownloadHistoryMedia(ctx, targetChatID)
@@ -95,12 +100,12 @@ func main() {
 				log.Error("下载历史媒体失败: %v", downloadErr)
 			}
 
-		case 2:
+		case ModeMonitorNewMessages:
 			// 只监控新消息
 			log.Info("开始实时监控新消息...")
 			client.SetupRealTimeMonitoring(targetChatID)
 
-		case 3:
+		case ModeDownloadAndMonitor:
 			// 先下载历史，再监控新消息
 			log.Info("开始下载历史媒体文件...")
 			downloadErr := client.DownloadHistoryMedia(ctx, targetChatID)
@@ -170,14 +175,14 @@ func selectMode(log *logger.Logger) int {
 	fmt.Print("\n请选择模式 (1-3): ")
 	var choice string
 	if _, err := fmt.Scanln(&choice); err != nil {
-		log.Warn("读取输入失败，使用默认模式 3")
-		return 3
+		log.Warn("读取输入失败，使用默认模式 %d", ModeDownloadAndMonitor)
+		return ModeDownloadAndMonitor
 	}
 
 	mode, err := strconv.Atoi(choice)
-	if err != nil || mode < 1 || mode > 3 {
-		log.Warn("输入无效，使用默认模式 3")
-		return 3
+	if err != nil || mode < ModeDownloadHistory || mode > ModeDownloadAndMonitor {
+		log.Warn("输入无效，使用默认模式 %d", ModeDownloadAndMonitor)
+		return ModeDownloadAndMonitor
 	}
 
 	return mode
