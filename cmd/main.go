@@ -142,6 +142,7 @@ func selectChat(ctx context.Context, client *telegram.Client, log *logger.Logger
 	fmt.Print("\n请选择聊天 (输入序号): ")
 	var choice int
 	if _, scanErr := fmt.Scanln(&choice); scanErr != nil {
+		log.Warn("读取输入失败: %v", scanErr)
 		return 0, fmt.Errorf("输入无效")
 	}
 
@@ -163,7 +164,10 @@ func selectMode(log *logger.Logger) int {
 
 	fmt.Print("\n请选择模式 (1-3): ")
 	var choice string
-	fmt.Scanln(&choice)
+	if _, err := fmt.Scanln(&choice); err != nil {
+		log.Warn("读取输入失败，使用默认模式 3")
+		return 3
+	}
 
 	mode, err := strconv.Atoi(choice)
 	if err != nil || mode < 1 || mode > 3 {

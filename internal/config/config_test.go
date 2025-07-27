@@ -8,13 +8,25 @@ import (
 func TestLoadConfig(t *testing.T) {
 	// 测试配置加载功能
 	// 设置测试环境变量
-	os.Setenv("API_ID", "12345")
-	os.Setenv("API_HASH", "test_hash")
-	os.Setenv("PHONE", "+1234567890")
+	if err := os.Setenv("API_ID", "12345"); err != nil {
+		t.Fatalf("Failed to set API_ID: %v", err)
+	}
+	if err := os.Setenv("API_HASH", "test_hash"); err != nil {
+		t.Fatalf("Failed to set API_HASH: %v", err)
+	}
+	if err := os.Setenv("PHONE", "+1234567890"); err != nil {
+		t.Fatalf("Failed to set PHONE: %v", err)
+	}
 	defer func() {
-		os.Unsetenv("API_ID")
-		os.Unsetenv("API_HASH")
-		os.Unsetenv("PHONE")
+		if err := os.Unsetenv("API_ID"); err != nil {
+			t.Errorf("Failed to unset API_ID: %v", err)
+		}
+		if err := os.Unsetenv("API_HASH"); err != nil {
+			t.Errorf("Failed to unset API_HASH: %v", err)
+		}
+		if err := os.Unsetenv("PHONE"); err != nil {
+			t.Errorf("Failed to unset PHONE: %v", err)
+		}
 	}()
 
 	config, err := LoadConfig()
@@ -35,13 +47,25 @@ func TestLoadConfig(t *testing.T) {
 
 func TestLoadConfigWithDefaults(t *testing.T) {
 	// 测试默认值设置
-	os.Setenv("API_ID", "12345")
-	os.Setenv("API_HASH", "test_hash")
-	os.Setenv("PHONE", "+1234567890")
+	if err := os.Setenv("API_ID", "12345"); err != nil {
+		t.Fatalf("Failed to set API_ID: %v", err)
+	}
+	if err := os.Setenv("API_HASH", "test_hash"); err != nil {
+		t.Fatalf("Failed to set API_HASH: %v", err)
+	}
+	if err := os.Setenv("PHONE", "+1234567890"); err != nil {
+		t.Fatalf("Failed to set PHONE: %v", err)
+	}
 	defer func() {
-		os.Unsetenv("API_ID")
-		os.Unsetenv("API_HASH")
-		os.Unsetenv("PHONE")
+		if err := os.Unsetenv("API_ID"); err != nil {
+			t.Errorf("Failed to unset API_ID: %v", err)
+		}
+		if err := os.Unsetenv("API_HASH"); err != nil {
+			t.Errorf("Failed to unset API_HASH: %v", err)
+		}
+		if err := os.Unsetenv("PHONE"); err != nil {
+			t.Errorf("Failed to unset PHONE: %v", err)
+		}
 	}()
 
 	config, err := LoadConfig()
@@ -70,9 +94,15 @@ func TestLoadConfigWithDefaults(t *testing.T) {
 func TestLoadConfigMissingRequired(t *testing.T) {
 	// 测试缺少必要配置的情况
 	// 清除所有相关环境变量
-	os.Unsetenv("API_ID")
-	os.Unsetenv("API_HASH")
-	os.Unsetenv("PHONE")
+	if err := os.Unsetenv("API_ID"); err != nil {
+		t.Errorf("Failed to unset API_ID: %v", err)
+	}
+	if err := os.Unsetenv("API_HASH"); err != nil {
+		t.Errorf("Failed to unset API_HASH: %v", err)
+	}
+	if err := os.Unsetenv("PHONE"); err != nil {
+		t.Errorf("Failed to unset PHONE: %v", err)
+	}
 
 	_, err := LoadConfig()
 	if err == nil {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -118,7 +119,17 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 		ext := d.getFileExtension(media.MimeType)
 		fileName = fmt.Sprintf("file_%d_%d%s", media.MessageID, media.FileID, ext)
 	}
+
+	// 清理文件名以防止路径遍历攻击
+	fileName = d.sanitizeFileName(fileName)
 	filePath := filepath.Join(chatDir, fileName)
+
+	// 验证文件路径安全性
+	if !d.isSafePath(filePath, d.downloadPath) {
+		d.logger.Error("不安全的文件路径: %s", filePath)
+		d.updateStats(false, 0)
+		return fmt.Errorf("unsafe file path: %s", filePath)
+	}
 
 	// 检查文件是否已存在
 	if _, err := os.Stat(filePath); err == nil {
@@ -141,6 +152,14 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 	} else {
 		// 创建临时文件作为占位符
 		tempPath := filePath + ".tmp"
+
+		// 验证临时文件路径安全性
+		if !d.isSafePath(tempPath, d.downloadPath) {
+			d.logger.Error("不安全的临时文件路径: %s", tempPath)
+			d.updateStats(false, 0)
+			return fmt.Errorf("unsafe temp file path: %s", tempPath)
+		}
+
 		file, err := os.Create(tempPath)
 		if err != nil {
 			d.logger.Error("创建临时文件失败 %s: %v", fileName, err)
@@ -169,6 +188,51 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 	d.logger.Info("下载完成: %s", fileName)
 	d.updateStats(true, media.FileSize)
 	return nil
+}
+
+// sanitizeFileName 清理文件名，移除危险字符
+func (d *Downloader) sanitizeFileName(fileName string) string {
+	// 移除路径分隔符和其他危险字符
+	fileName = strings.ReplaceAll(fileName, "/", "_")
+	fileName = strings.ReplaceAll(fileName, "\\", "_")
+	fileName = strings.ReplaceAll(fileName, "..", "_")
+	fileName = strings.ReplaceAll(fileName, ":", "_")
+	fileName = strings.ReplaceAll(fileName, "*", "_")
+	fileName = strings.ReplaceAll(fileName, "?", "_")
+	fileName = strings.ReplaceAll(fileName, "\"", "_")
+	fileName = strings.ReplaceAll(fileName, "<", "_")
+	fileName = strings.ReplaceAll(fileName, ">", "_")
+	fileName = strings.ReplaceAll(fileName, "|", "_")
+
+	// 确保文件名不为空
+	if fileName == "" || fileName == "." || fileName == ".." {
+		fileName = "unnamed_file"
+	}
+
+	return fileName
+}
+
+// isSafePath 验证文件路径是否安全（在指定的基础目录内）
+func (d *Downloader) isSafePath(filePath, basePath string) bool {
+	// 获取绝对路径
+	absFilePath, err := filepath.Abs(filePath)
+	if err != nil {
+		return false
+	}
+
+	absBasePath, err := filepath.Abs(basePath)
+	if err != nil {
+		return false
+	}
+
+	// 检查文件路径是否在基础路径内
+	relPath, err := filepath.Rel(absBasePath, absFilePath)
+	if err != nil {
+		return false
+	}
+
+	// 如果相对路径包含".."，说明试图访问基础目录外的文件
+	return !strings.HasPrefix(relPath, "..") && !strings.Contains(relPath, "/..")
 }
 
 // getFileExtension 根据MIME类型获取文件扩展名

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gotd/td/telegram"
@@ -263,87 +264,119 @@ func (c *Client) extractMediaInfo(msg tg.MessageClass, chatID int64) *downloader
 		return nil
 	}
 
-	var mediaInfo *downloader.MediaInfo
-
 	switch media := message.Media.(type) {
 	case *tg.MessageMediaPhoto:
-		if photo, ok := media.Photo.(*tg.Photo); ok {
-			mediaInfo = &downloader.MediaInfo{
-				MessageID:     message.ID,
-				FileID:        photo.ID,
-				AccessHash:    photo.AccessHash,
-				FileReference: photo.FileReference,
-				MediaType:     "photo",
-				FileName:      fmt.Sprintf("photo_%d.jpg", photo.ID),
-				ChatID:        chatID,
-				Date:          time.Unix(int64(message.Date), 0),
-				MimeType:      "image/jpeg",
-			}
-
-			// 获取最大尺寸和ThumbSize
-			var maxSize int
-			var thumbType string
-			for _, size := range photo.Sizes {
-				switch s := size.(type) {
-				case *tg.PhotoSize:
-					if s.Size > maxSize {
-						maxSize = s.Size
-						thumbType = s.Type
-					}
-				case *tg.PhotoStrippedSize:
-					if len(s.Bytes) > maxSize {
-						maxSize = len(s.Bytes)
-						thumbType = s.Type
-					}
-				case *tg.PhotoSizeProgressive:
-					if len(s.Sizes) > 0 && s.Sizes[len(s.Sizes)-1] > maxSize {
-						maxSize = s.Sizes[len(s.Sizes)-1]
-						thumbType = s.Type
-					}
-				}
-			}
-			mediaInfo.FileSize = int64(maxSize)
-			mediaInfo.ThumbSize = thumbType
-		}
-
+		return c.extractPhotoInfo(media, message, chatID)
 	case *tg.MessageMediaDocument:
-		if doc, ok := media.Document.(*tg.Document); ok {
-			fileName := fmt.Sprintf("document_%d", doc.ID)
+		return c.extractDocumentInfo(media, message, chatID)
+	default:
+		return nil
+	}
+}
 
-			// 尝试获取文件名
-			for _, attr := range doc.Attributes {
-				if filename, ok := attr.(*tg.DocumentAttributeFilename); ok {
-					fileName = filename.FileName
-					break
-				}
-			}
+// extractPhotoInfo 提取照片信息
+func (c *Client) extractPhotoInfo(media *tg.MessageMediaPhoto, message *tg.Message, chatID int64) *downloader.MediaInfo {
+	photo, ok := media.Photo.(*tg.Photo)
+	if !ok {
+		return nil
+	}
 
-			mediaInfo = &downloader.MediaInfo{
-				MessageID:     message.ID,
-				FileID:        doc.ID,
-				AccessHash:    doc.AccessHash,
-				FileReference: doc.FileReference,
-				MediaType:     "document",
-				FileName:      fileName,
-				FileSize:      doc.Size,
-				ThumbSize:     "",
-				ChatID:        chatID,
-				Date:          time.Unix(int64(message.Date), 0),
-				MimeType:      doc.MimeType,
-			}
+	mediaInfo := &downloader.MediaInfo{
+		MessageID:     message.ID,
+		FileID:        photo.ID,
+		AccessHash:    photo.AccessHash,
+		FileReference: photo.FileReference,
+		MediaType:     "photo",
+		FileName:      fmt.Sprintf("photo_%d.jpg", photo.ID),
+		ChatID:        chatID,
+		Date:          time.Unix(int64(message.Date), 0),
+		MimeType:      "image/jpeg",
+	}
+
+	// 获取最大尺寸和ThumbSize
+	maxSize, thumbType := c.findLargestPhotoSize(photo.Sizes)
+	mediaInfo.FileSize = int64(maxSize)
+	mediaInfo.ThumbSize = thumbType
+
+	return mediaInfo
+}
+
+// findLargestPhotoSize 查找最大的照片尺寸
+func (c *Client) findLargestPhotoSize(sizes []tg.PhotoSizeClass) (int, string) {
+	var maxSize int
+	var thumbType string
+
+	for _, size := range sizes {
+		currentSize, currentType := c.getPhotoSizeInfo(size)
+		if currentSize > maxSize {
+			maxSize = currentSize
+			thumbType = currentType
 		}
 	}
 
-	return mediaInfo
+	return maxSize, thumbType
+}
+
+// getPhotoSizeInfo 获取照片尺寸信息
+func (c *Client) getPhotoSizeInfo(size tg.PhotoSizeClass) (int, string) {
+	switch s := size.(type) {
+	case *tg.PhotoSize:
+		return s.Size, s.Type
+	case *tg.PhotoStrippedSize:
+		return len(s.Bytes), s.Type
+	case *tg.PhotoSizeProgressive:
+		if len(s.Sizes) > 0 {
+			return s.Sizes[len(s.Sizes)-1], s.Type
+		}
+		return 0, s.Type
+	default:
+		return 0, ""
+	}
+}
+
+// extractDocumentInfo 提取文档信息
+func (c *Client) extractDocumentInfo(media *tg.MessageMediaDocument, message *tg.Message, chatID int64) *downloader.MediaInfo {
+	doc, ok := media.Document.(*tg.Document)
+	if !ok {
+		return nil
+	}
+
+	fileName := c.getDocumentFileName(doc)
+
+	return &downloader.MediaInfo{
+		MessageID:     message.ID,
+		FileID:        doc.ID,
+		AccessHash:    doc.AccessHash,
+		FileReference: doc.FileReference,
+		MediaType:     "document",
+		FileName:      fileName,
+		FileSize:      doc.Size,
+		ThumbSize:     "",
+		ChatID:        chatID,
+		Date:          time.Unix(int64(message.Date), 0),
+		MimeType:      doc.MimeType,
+	}
+}
+
+// getDocumentFileName 获取文档文件名
+func (c *Client) getDocumentFileName(doc *tg.Document) string {
+	// 尝试获取文件名
+	for _, attr := range doc.Attributes {
+		if filename, ok := attr.(*tg.DocumentAttributeFilename); ok {
+			return filename.FileName
+		}
+	}
+	// 如果没有找到文件名，使用默认格式
+	return fmt.Sprintf("document_%d", doc.ID)
 }
 
 // DownloadFile 实际下载文件
 func (c *Client) DownloadFile(ctx context.Context, media *downloader.MediaInfo, filePath string) error {
 	// 创建临时文件
 	tempPath := filePath + ".tmp"
-	file, err := os.Create(tempPath)
+	file, err := c.createTempFile(tempPath)
 	if err != nil {
-		return fmt.Errorf("创建临时文件失败: %w", err)
+		return err
 	}
 	defer func() {
 		if err := file.Close(); err != nil {
@@ -351,44 +384,84 @@ func (c *Client) DownloadFile(ctx context.Context, media *downloader.MediaInfo, 
 		}
 	}()
 
-	// 根据媒体类型构建下载位置
-	var location tg.InputFileLocationClass
-	if media.MediaType == "photo" {
-		location = &tg.InputPhotoFileLocation{
-			ID:            media.FileID,
-			AccessHash:    media.AccessHash,
-			FileReference: media.FileReference,
-			ThumbSize:     media.ThumbSize,
-		}
-	} else if media.MediaType == "document" {
-		location = &tg.InputDocumentFileLocation{
-			ID:            media.FileID,
-			AccessHash:    media.AccessHash,
-			FileReference: media.FileReference,
-			ThumbSize:     media.ThumbSize,
-		}
-	} else {
-		return errors.New("unsupported media type")
+	// 构建下载位置
+	location, err := c.buildFileLocation(media)
+	if err != nil {
+		return err
 	}
 
-	// 分块下载文件
-	// Telegram API限制：块大小必须是1024的倍数，且不能超过1MB
+	// 下载文件内容
+	if err := c.downloadFileChunks(ctx, file, location, media.FileSize, tempPath); err != nil {
+		return err
+	}
+
+	// 关闭文件
+	if err := file.Close(); err != nil {
+		c.logger.Error("关闭文件失败: %v", err)
+	}
+
+	// 重命名临时文件
+	return c.finalizeTempFile(tempPath, filePath)
+}
+
+// createTempFile 创建临时文件
+func (c *Client) createTempFile(tempPath string) (*os.File, error) {
+	// 验证路径安全性
+	if !c.isSafePath(tempPath) {
+		return nil, fmt.Errorf("unsafe temp file path: %s", tempPath)
+	}
+
+	file, err := os.Create(tempPath)
+	if err != nil {
+		return nil, fmt.Errorf("创建临时文件失败: %w", err)
+	}
+	return file, nil
+}
+
+// isSafePath 验证文件路径是否安全
+func (c *Client) isSafePath(filePath string) bool {
+	// 检查路径中是否包含危险的路径遍历字符
+	if strings.Contains(filePath, "..") {
+		return false
+	}
+
+	// 检查是否为绝对路径或包含危险字符
+	if strings.HasPrefix(filePath, "/") || strings.Contains(filePath, "\\..\\") || strings.Contains(filePath, "/..") {
+		return false
+	}
+
+	return true
+}
+
+// buildFileLocation 根据媒体类型构建下载位置
+func (c *Client) buildFileLocation(media *downloader.MediaInfo) (tg.InputFileLocationClass, error) {
+	switch media.MediaType {
+	case "photo":
+		return &tg.InputPhotoFileLocation{
+			ID:            media.FileID,
+			AccessHash:    media.AccessHash,
+			FileReference: media.FileReference,
+			ThumbSize:     media.ThumbSize,
+		}, nil
+	case "document":
+		return &tg.InputDocumentFileLocation{
+			ID:            media.FileID,
+			AccessHash:    media.AccessHash,
+			FileReference: media.FileReference,
+			ThumbSize:     media.ThumbSize,
+		}, nil
+	default:
+		return nil, errors.New("unsupported media type")
+	}
+}
+
+// downloadFileChunks 分块下载文件
+func (c *Client) downloadFileChunks(ctx context.Context, file *os.File, location tg.InputFileLocationClass, fileSize int64, tempPath string) error {
 	const chunkSize = 256 * 1024 // 256KB，更安全的块大小
 	var offset int64 = 0
 
-	for offset < media.FileSize {
-		limit := chunkSize
-		if remaining := media.FileSize - offset; remaining < chunkSize {
-			limit = int(remaining)
-		}
-
-		// 确保limit是1024的倍数，且不超过1MB
-		if limit > 1024*1024 {
-			limit = 1024 * 1024
-		}
-		if limit%1024 != 0 {
-			limit = (limit/1024 + 1) * 1024
-		}
+	for offset < fileSize {
+		limit := c.calculateChunkLimit(chunkSize, fileSize-offset)
 
 		// 下载文件块
 		fileData, err := c.API.UploadGetFile(ctx, &tg.UploadGetFileRequest{
@@ -399,43 +472,68 @@ func (c *Client) DownloadFile(ctx context.Context, media *downloader.MediaInfo, 
 		})
 
 		if err != nil {
-			if removeErr := os.Remove(tempPath); removeErr != nil {
-				c.logger.Error("清理临时文件失败: %v", removeErr)
-			}
+			c.cleanupTempFile(tempPath)
 			return fmt.Errorf("下载文件块失败: %w", err)
 		}
 
-		// 写入文件
-		switch fd := fileData.(type) {
-		case *tg.UploadFile:
-			if _, err := file.Write(fd.Bytes); err != nil {
-				if removeErr := os.Remove(tempPath); removeErr != nil {
-					c.logger.Error("清理临时文件失败: %v", removeErr)
-				}
-				return fmt.Errorf("写入文件失败: %w", err)
-			}
-			offset += int64(len(fd.Bytes))
-		default:
-			if removeErr := os.Remove(tempPath); removeErr != nil {
-				c.logger.Error("清理临时文件失败: %v", removeErr)
-			}
-			return fmt.Errorf("未知的文件数据类型")
+		// 写入文件块
+		bytesWritten, err := c.writeFileChunk(file, fileData)
+		if err != nil {
+			c.cleanupTempFile(tempPath)
+			return err
 		}
+
+		offset += int64(bytesWritten)
 	}
 
-	// 关闭文件
-	if err := file.Close(); err != nil {
-		c.logger.Error("关闭文件失败: %v", err)
+	return nil
+}
+
+// calculateChunkLimit 计算块大小限制
+func (c *Client) calculateChunkLimit(chunkSize int, remaining int64) int {
+	limit := chunkSize
+	if remaining < int64(chunkSize) {
+		limit = int(remaining)
 	}
 
-	// 重命名临时文件
+	// 确保limit是1024的倍数，且不超过1MB
+	if limit > 1024*1024 {
+		limit = 1024 * 1024
+	}
+	if limit%1024 != 0 {
+		limit = (limit/1024 + 1) * 1024
+	}
+
+	return limit
+}
+
+// writeFileChunk 写入文件块
+func (c *Client) writeFileChunk(file *os.File, fileData tg.UploadFileClass) (int, error) {
+	switch fd := fileData.(type) {
+	case *tg.UploadFile:
+		n, err := file.Write(fd.Bytes)
+		if err != nil {
+			return 0, fmt.Errorf("写入文件失败: %w", err)
+		}
+		return len(fd.Bytes), nil
+	default:
+		return 0, fmt.Errorf("未知的文件数据类型")
+	}
+}
+
+// cleanupTempFile 清理临时文件
+func (c *Client) cleanupTempFile(tempPath string) {
+	if removeErr := os.Remove(tempPath); removeErr != nil {
+		c.logger.Error("清理临时文件失败: %v", removeErr)
+	}
+}
+
+// finalizeTempFile 完成临时文件处理
+func (c *Client) finalizeTempFile(tempPath, filePath string) error {
 	if err := os.Rename(tempPath, filePath); err != nil {
-		if removeErr := os.Remove(tempPath); removeErr != nil {
-			c.logger.Error("清理临时文件失败: %v", removeErr)
-		}
+		c.cleanupTempFile(tempPath)
 		return fmt.Errorf("重命名文件失败: %w", err)
 	}
-
 	return nil
 }
 
