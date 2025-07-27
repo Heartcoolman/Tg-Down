@@ -13,6 +13,11 @@ import (
 	"github.com/gotd/td/telegram"
 )
 
+const (
+	// DirectoryPermission is the permission mode for creating session directories
+	DirectoryPermission = 0750
+)
+
 // Manager 会话管理器
 type Manager struct {
 	sessionDir string
@@ -30,7 +35,7 @@ func New(sessionDir string, logger *logger.Logger) *Manager {
 // GetSessionStorage 获取会话存储
 func (m *Manager) GetSessionStorage(phone string) session.Storage {
 	// 确保会话目录存在
-	if err := os.MkdirAll(m.sessionDir, 0750); err != nil {
+	if err := os.MkdirAll(m.sessionDir, DirectoryPermission); err != nil {
 		m.logger.Error("创建会话目录失败: %v", err)
 		return nil
 	}

@@ -22,9 +22,13 @@ const (
 type LogLevel int
 
 const (
+	// DEBUG is the log level for debug messages
 	DEBUG LogLevel = iota
+	// INFO is the log level for informational messages
 	INFO
+	// WARN is the log level for warning messages
 	WARN
+	// ERROR is the log level for error messages
 	ERROR
 )
 

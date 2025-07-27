@@ -16,6 +16,8 @@ const (
 	DefaultDownloadPath = "./downloads"
 	DefaultLogLevel     = "info"
 	DefaultSessionDir   = "./sessions"
+	// FilePermission is the permission mode for creating config files
+	FilePermission = 0600
 )
 
 // Config 应用配置结构
@@ -202,7 +204,7 @@ func (c *Config) SaveConfig(filename string) error {
 		return fmt.Errorf("序列化配置失败: %w", err)
 	}
 
-	if err := os.WriteFile(filename, data, 0600); err != nil {
+	if err := os.WriteFile(filename, data, FilePermission); err != nil {
 		return fmt.Errorf("保存配置文件失败: %w", err)
 	}
 
