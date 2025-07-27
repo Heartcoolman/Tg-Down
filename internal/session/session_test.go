@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"tg-down/internal/logger"
 )
@@ -50,12 +51,22 @@ func TestHasValidSession(t *testing.T) {
 
 	// 创建一个空的会话文件
 	sessionPath := filepath.Join(tempDir, "session_+1234567890.json")
+
+	// 验证路径安全性
+	if !filepath.IsAbs(sessionPath) {
+		sessionPath = filepath.Clean(sessionPath)
+	}
+	if strings.Contains(sessionPath, "..") {
+		t.Fatalf("Invalid session path detected: %s", sessionPath)
+	}
+
 	file, err := os.Create(sessionPath)
 	if err != nil {
 		t.Fatalf("Failed to create test session file: %v", err)
 	}
-	if err := file.Close(); err != nil {
-		t.Fatalf("Failed to close test session file: %v", err)
+	closeErr := file.Close()
+	if closeErr != nil {
+		t.Fatalf("Failed to close test session file: %v", closeErr)
 	}
 
 	// 空文件应该返回false
@@ -64,9 +75,9 @@ func TestHasValidSession(t *testing.T) {
 	}
 
 	// 写入一些内容
-	err = os.WriteFile(sessionPath, []byte("test content"), 0600)
-	if err != nil {
-		t.Fatalf("Failed to write test session file: %v", err)
+	writeErr := os.WriteFile(sessionPath, []byte("test content"), 0600)
+	if writeErr != nil {
+		t.Fatalf("Failed to write test session file: %v", writeErr)
 	}
 
 	// 现在应该存在

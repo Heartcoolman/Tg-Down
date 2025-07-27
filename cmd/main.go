@@ -53,15 +53,16 @@ func main() {
 	log.Info("正在连接到Telegram...")
 	err = client.Client.Run(ctx, func(ctx context.Context) error {
 		// 检查授权状态
-		status, err := client.Client.Auth().Status(ctx)
-		if err != nil {
-			return fmt.Errorf("检查授权状态失败: %w", err)
+		status, authErr := client.Client.Auth().Status(ctx)
+		if authErr != nil {
+			return fmt.Errorf("检查授权状态失败: %w", authErr)
 		}
 
 		if !status.Authorized {
 			// 需要登录
-			if err := client.Authenticate(ctx); err != nil {
-				return fmt.Errorf("认证失败: %w", err)
+			authErr := client.Authenticate(ctx)
+			if authErr != nil {
+				return fmt.Errorf("认证失败: %w", authErr)
 			}
 		}
 
@@ -87,8 +88,9 @@ func main() {
 		case 1:
 			// 只下载历史媒体
 			log.Info("开始下载历史媒体文件...")
-			if err := client.DownloadHistoryMedia(ctx, targetChatID); err != nil {
-				log.Error("下载历史媒体失败: %v", err)
+			downloadErr := client.DownloadHistoryMedia(ctx, targetChatID)
+			if downloadErr != nil {
+				log.Error("下载历史媒体失败: %v", downloadErr)
 			}
 
 		case 2:
@@ -99,8 +101,9 @@ func main() {
 		case 3:
 			// 先下载历史，再监控新消息
 			log.Info("开始下载历史媒体文件...")
-			if err := client.DownloadHistoryMedia(ctx, targetChatID); err != nil {
-				log.Error("下载历史媒体失败: %v", err)
+			downloadErr := client.DownloadHistoryMedia(ctx, targetChatID)
+			if downloadErr != nil {
+				log.Error("下载历史媒体失败: %v", downloadErr)
 			} else {
 				log.Info("历史媒体下载完成，开始实时监控...")
 				client.SetupRealTimeMonitoring(targetChatID)

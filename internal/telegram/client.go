@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -302,10 +303,7 @@ func (c *Client) extractPhotoInfo(media *tg.MessageMediaPhoto, message *tg.Messa
 }
 
 // findLargestPhotoSize 查找最大的照片尺寸
-func (c *Client) findLargestPhotoSize(sizes []tg.PhotoSizeClass) (int, string) {
-	var maxSize int
-	var thumbType string
-
+func (c *Client) findLargestPhotoSize(sizes []tg.PhotoSizeClass) (maxSize int, thumbType string) {
 	for _, size := range sizes {
 		currentSize, currentType := c.getPhotoSizeInfo(size)
 		if currentSize > maxSize {
@@ -396,8 +394,9 @@ func (c *Client) DownloadFile(ctx context.Context, media *downloader.MediaInfo, 
 	}
 
 	// 关闭文件
-	if err := file.Close(); err != nil {
-		c.logger.Error("关闭文件失败: %v", err)
+	closeErr := file.Close()
+	if closeErr != nil {
+		c.logger.Error("关闭文件失败: %v", closeErr)
 	}
 
 	// 重命名临时文件
@@ -411,7 +410,13 @@ func (c *Client) createTempFile(tempPath string) (*os.File, error) {
 		return nil, fmt.Errorf("unsafe temp file path: %s", tempPath)
 	}
 
-	file, err := os.Create(tempPath)
+	// 额外的路径安全检查
+	cleanTempPath := filepath.Clean(tempPath)
+	if strings.Contains(cleanTempPath, "..") {
+		return nil, fmt.Errorf("detected path traversal in temp path: %s", tempPath)
+	}
+
+	file, err := os.Create(cleanTempPath)
 	if err != nil {
 		return nil, fmt.Errorf("创建临时文件失败: %w", err)
 	}

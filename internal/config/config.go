@@ -133,8 +133,8 @@ func loadDownloadConfig(config *Config) {
 	}
 
 	if maxConcurrent := os.Getenv("MAX_CONCURRENT_DOWNLOADS"); maxConcurrent != "" {
-		if max, err := strconv.Atoi(maxConcurrent); err == nil {
-			config.Download.MaxConcurrent = max
+		if maxValue, err := strconv.Atoi(maxConcurrent); err == nil {
+			config.Download.MaxConcurrent = maxValue
 		}
 	}
 
