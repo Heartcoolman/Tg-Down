@@ -126,7 +126,7 @@ func testHTTPConnection() error {
 		Timeout: TestTimeout,
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://"+TelegramAPIHost, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://"+TelegramAPIHost, http.NoBody)
 	if err != nil {
 		return fmt.Errorf("无法创建 HTTP 请求: %w", err)
 	}
