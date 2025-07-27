@@ -16,6 +16,13 @@ import (
 	"tg-down/internal/logger"
 )
 
+const (
+	// DirectoryPermission is the permission mode for creating directories
+	DirectoryPermission = 0750
+	// DownloadDelayMs is the simulated download delay in milliseconds
+	DownloadDelayMs = 100
+)
+
 // MediaInfo 媒体文件信息
 type MediaInfo struct {
 	MessageID     int
@@ -107,7 +114,7 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 
 	// 创建下载目录
 	chatDir := filepath.Join(d.downloadPath, fmt.Sprintf("chat_%d", media.ChatID))
-	if err := os.MkdirAll(chatDir, 0750); err != nil {
+	if err := os.MkdirAll(chatDir, DirectoryPermission); err != nil {
 		d.logger.Error("创建目录失败: %v", err)
 		d.updateStats(false, 0)
 		return err
@@ -181,7 +188,7 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 
 		// 模拟下载过程
 		d.logger.Debug("正在下载文件: %s", fileName)
-		time.Sleep(100 * time.Millisecond) // 模拟下载时间
+		time.Sleep(DownloadDelayMs * time.Millisecond) // 模拟下载时间
 
 		// 下载完成后重命名文件
 		if err := os.Rename(tempPath, filePath); err != nil {

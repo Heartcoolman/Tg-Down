@@ -470,7 +470,7 @@ func (c *Client) downloadFileChunks(
 	tempPath string,
 ) error {
 	const chunkSize = 256 * 1024 // 256KB，更安全的块大小
-	var offset int64 = 0
+	var offset int64
 
 	for offset < fileSize {
 		limit := c.calculateChunkLimit(chunkSize, fileSize-offset)

@@ -9,6 +9,11 @@ import (
 	"tg-down/internal/logger"
 )
 
+const (
+	// TestFilePermission is the permission mode for creating test files
+	TestFilePermission = 0600
+)
+
 func TestNew(t *testing.T) {
 	// 测试创建会话管理器
 	tempDir := t.TempDir()
@@ -76,7 +81,7 @@ func TestHasValidSession(t *testing.T) {
 	}
 
 	// 写入一些内容
-	writeErr := os.WriteFile(sessionPath, []byte("test content"), 0600)
+	writeErr := os.WriteFile(sessionPath, []byte("test content"), TestFilePermission)
 	if writeErr != nil {
 		t.Fatalf("Failed to write test session file: %v", writeErr)
 	}
@@ -96,7 +101,7 @@ func TestClearSession(t *testing.T) {
 
 	// 创建一个会话文件
 	sessionPath := filepath.Join(tempDir, "session_+1234567890.json")
-	err := os.WriteFile(sessionPath, []byte("test content"), 0600)
+	err := os.WriteFile(sessionPath, []byte("test content"), TestFilePermission)
 	if err != nil {
 		t.Fatalf("Failed to create test session file: %v", err)
 	}

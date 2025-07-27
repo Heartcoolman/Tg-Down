@@ -1,3 +1,5 @@
+// Package main implements the entry point for the Telegram media downloader application.
+// It provides functionality to download media files from Telegram chats and monitor new messages.
 package main
 
 import (
