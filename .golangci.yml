@@ -21,6 +21,8 @@ linters-settings:
         allow:
           - $gostd
           - github.com/gotd/td
+          - github.com/joho/godotenv
+          - gopkg.in/yaml.v3
           - tg-down/internal/config
           - tg-down/internal/logger
           - tg-down/internal/telegram

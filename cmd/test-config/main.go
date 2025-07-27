@@ -49,7 +49,7 @@ func main() {
 	fmt.Printf("✅ 日志级别: %s\n", cfg.Log.Level)
 
 	// 测试下载目录
-	if err := os.MkdirAll(cfg.Download.Path, 0755); err != nil {
+	if err := os.MkdirAll(cfg.Download.Path, 0750); err != nil {
 		fmt.Printf("❌ 无法创建下载目录 %s: %v\n", cfg.Download.Path, err)
 	} else {
 		fmt.Printf("✅ 下载目录: %s\n", cfg.Download.Path)
