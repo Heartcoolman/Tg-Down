@@ -1,3 +1,5 @@
+// Package main implements a configuration testing utility for the Telegram media downloader.
+// It validates configuration settings and verifies that all required parameters are properly set.
 package main
 
 import (
@@ -6,6 +8,11 @@ import (
 
 	"tg-down/internal/config"
 	"tg-down/internal/logger"
+)
+
+const (
+	// DirectoryPermission is the permission mode for creating directories
+	DirectoryPermission = 0750
 )
 
 func main() {
@@ -49,7 +56,7 @@ func main() {
 	fmt.Printf("✅ 日志级别: %s\n", cfg.Log.Level)
 
 	// 测试下载目录
-	if err := os.MkdirAll(cfg.Download.Path, 0755); err != nil {
+	if err := os.MkdirAll(cfg.Download.Path, DirectoryPermission); err != nil {
 		fmt.Printf("❌ 无法创建下载目录 %s: %v\n", cfg.Download.Path, err)
 	} else {
 		fmt.Printf("✅ 下载目录: %s\n", cfg.Download.Path)

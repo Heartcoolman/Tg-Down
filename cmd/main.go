@@ -1,3 +1,5 @@
+// Package main implements the entry point for the Telegram media downloader application.
+// It provides functionality to download media files from Telegram chats and monitor new messages.
 package main
 
 import (
@@ -13,7 +15,22 @@ import (
 	"tg-down/internal/telegram"
 )
 
+const (
+	// ModeDownloadHistory is the mode for downloading historical media.
+	ModeDownloadHistory = 1
+	// ModeMonitorNewMessages is the mode for monitoring new messages.
+	ModeMonitorNewMessages = 2
+	// ModeDownloadAndMonitor is the mode for both downloading history and monitoring new messages.
+	ModeDownloadAndMonitor = 3
+)
+
 func main() {
+	// 检查命令行参数
+	if len(os.Args) > 1 && os.Args[1] == "--clear-session" {
+		clearSessionAndExit()
+		return
+	}
+
 	// 加载配置
 	cfg, err := config.LoadConfig()
 	if err != nil {
@@ -47,15 +64,16 @@ func main() {
 	log.Info("正在连接到Telegram...")
 	err = client.Client.Run(ctx, func(ctx context.Context) error {
 		// 检查授权状态
-		status, err := client.Client.Auth().Status(ctx)
-		if err != nil {
-			return fmt.Errorf("检查授权状态失败: %w", err)
+		status, authErr := client.Client.Auth().Status(ctx)
+		if authErr != nil {
+			return fmt.Errorf("检查授权状态失败: %w", authErr)
 		}
 
 		if !status.Authorized {
 			// 需要登录
-			if err := client.Authenticate(ctx); err != nil {
-				return fmt.Errorf("认证失败: %w", err)
+			authErr := client.Authenticate(ctx)
+			if authErr != nil {
+				return fmt.Errorf("认证失败: %w", authErr)
 			}
 		}
 
@@ -78,27 +96,29 @@ func main() {
 		mode := selectMode(log)
 
 		switch mode {
-		case 1:
+		case ModeDownloadHistory:
 			// 只下载历史媒体
 			log.Info("开始下载历史媒体文件...")
-			if err := client.DownloadHistoryMedia(ctx, targetChatID); err != nil {
-				log.Error("下载历史媒体失败: %v", err)
+			downloadErr := client.DownloadHistoryMedia(ctx, targetChatID)
+			if downloadErr != nil {
+				log.Error("下载历史媒体失败: %v", downloadErr)
 			}
 
-		case 2:
-		// 只监控新消息
-		log.Info("开始实时监控新消息...")
-		client.SetupRealTimeMonitoring(targetChatID)
+		case ModeMonitorNewMessages:
+			// 只监控新消息
+			log.Info("开始实时监控新消息...")
+			client.SetupRealTimeMonitoring(targetChatID)
 
-		case 3:
+		case ModeDownloadAndMonitor:
 			// 先下载历史，再监控新消息
 			log.Info("开始下载历史媒体文件...")
-			if err := client.DownloadHistoryMedia(ctx, targetChatID); err != nil {
-				log.Error("下载历史媒体失败: %v", err)
+			downloadErr := client.DownloadHistoryMedia(ctx, targetChatID)
+			if downloadErr != nil {
+				log.Error("下载历史媒体失败: %v", downloadErr)
 			} else {
-			log.Info("历史媒体下载完成，开始实时监控...")
-			client.SetupRealTimeMonitoring(targetChatID)
-		}
+				log.Info("历史媒体下载完成，开始实时监控...")
+				client.SetupRealTimeMonitoring(targetChatID)
+			}
 		}
 
 		// 保持运行直到上下文取消
@@ -107,7 +127,8 @@ func main() {
 	})
 
 	if err != nil {
-		log.Fatal("运行失败: %v", err)
+		log.Error("运行失败: %v", err)
+		os.Exit(1)
 	}
 
 	log.Info("程序退出")
@@ -134,7 +155,8 @@ func selectChat(ctx context.Context, client *telegram.Client, log *logger.Logger
 	// 让用户选择
 	fmt.Print("\n请选择聊天 (输入序号): ")
 	var choice int
-	if _, err := fmt.Scanln(&choice); err != nil {
+	if _, scanErr := fmt.Scanln(&choice); scanErr != nil {
+		log.Warn("读取输入失败: %v", scanErr)
 		return 0, fmt.Errorf("输入无效")
 	}
 
@@ -156,13 +178,39 @@ func selectMode(log *logger.Logger) int {
 
 	fmt.Print("\n请选择模式 (1-3): ")
 	var choice string
-	fmt.Scanln(&choice)
+	if _, err := fmt.Scanln(&choice); err != nil {
+		log.Warn("读取输入失败，使用默认模式 %d", ModeDownloadAndMonitor)
+		return ModeDownloadAndMonitor
+	}
 
 	mode, err := strconv.Atoi(choice)
-	if err != nil || mode < 1 || mode > 3 {
-		log.Warn("输入无效，使用默认模式 3")
-		return 3
+	if err != nil || mode < ModeDownloadHistory || mode > ModeDownloadAndMonitor {
+		log.Warn("输入无效，使用默认模式 %d", ModeDownloadAndMonitor)
+		return ModeDownloadAndMonitor
 	}
 
 	return mode
+}
+
+// clearSessionAndExit 清除会话文件并退出
+func clearSessionAndExit() {
+	fmt.Println("正在清除会话文件...")
+
+	// 加载配置以获取会话目录
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		fmt.Printf("加载配置失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 创建临时客户端以使用清除会话功能
+	log := logger.New(config.DefaultLogLevel)
+	client := telegram.New(cfg, log)
+
+	if err := client.ClearSession(); err != nil {
+		fmt.Printf("清除会话失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("会话文件已清除，下次启动将需要重新登录")
 }
