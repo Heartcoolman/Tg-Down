@@ -14,10 +14,11 @@ import (
 	"tg-down/internal/logger"
 	"tg-down/internal/telegram"
 )
+
 const (
-    ModeDownloadHistory      = 1
-    ModeMonitorNewMessages   = 2
-    ModeDownloadAndMonitor   = 3
+	ModeDownloadHistory    = 1
+	ModeMonitorNewMessages = 2
+	ModeDownloadAndMonitor = 3
 )
 
 func main() {
