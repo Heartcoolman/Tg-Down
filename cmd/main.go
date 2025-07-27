@@ -17,7 +17,7 @@ import (
 
 const (
 	// ModeDownloadHistory is the mode for downloading historical media.
-	ModeDownloadHistory    = 1
+	ModeDownloadHistory = 1
 	// ModeMonitorNewMessages is the mode for monitoring new messages.
 	ModeMonitorNewMessages = 2
 	// ModeDownloadAndMonitor is the mode for both downloading history and monitoring new messages.
