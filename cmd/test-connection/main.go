@@ -43,7 +43,7 @@ func main() {
 
 	// 执行连接测试
 	success := runConnectionTests(cfg, log)
-	
+
 	if success {
 		fmt.Println("\n✅ 所有连接测试通过！可以安全运行主程序。")
 		os.Exit(0)
@@ -68,11 +68,11 @@ func runConnectionTests(cfg *config.Config, log *logger.Logger) bool {
 	allPassed := true
 	for _, test := range tests {
 		fmt.Printf("🔄 执行 %s...", test.name)
-		
+
 		start := time.Now()
 		err := test.test()
 		duration := time.Since(start)
-		
+
 		if err != nil {
 			fmt.Printf(" ❌ 失败 (%.2fs)\n", duration.Seconds())
 			fmt.Printf("   错误: %v\n", err)
@@ -143,7 +143,7 @@ func testTelegramAPIConnection(cfg *config.Config, log *logger.Logger) error {
 	// 尝试连接并获取配置
 	err := client.Run(ctx, func(ctx context.Context) error {
 		api := client.API()
-		
+
 		// 尝试获取配置信息（这是一个轻量级的 API 调用）
 		_, configErr := api.HelpGetConfig(ctx)
 		if configErr != nil {
