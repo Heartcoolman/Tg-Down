@@ -147,7 +147,9 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 			d.updateStats(false, 0)
 			return err
 		}
-		file.Close()
+		if err := file.Close(); err != nil {
+			d.logger.Error("关闭临时文件失败 %s: %v", fileName, err)
+		}
 
 		// 模拟下载过程
 		d.logger.Debug("正在下载文件: %s", fileName)

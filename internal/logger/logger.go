@@ -10,6 +10,14 @@ import (
 	"time"
 )
 
+// 日志级别常量
+const (
+	LevelDebug = "debug"
+	LevelInfo  = "info"
+	LevelWarn  = "warn"
+	LevelError = "error"
+)
+
 // LogLevel 日志级别
 type LogLevel int
 
@@ -30,13 +38,13 @@ type Logger struct {
 func New(level string) *Logger {
 	var logLevel LogLevel
 	switch strings.ToLower(level) {
-	case "debug":
+	case LevelDebug:
 		logLevel = DEBUG
-	case "info":
+	case LevelInfo:
 		logLevel = INFO
-	case "warn":
+	case LevelWarn:
 		logLevel = WARN
-	case "error":
+	case LevelError:
 		logLevel = ERROR
 	default:
 		logLevel = INFO
@@ -57,38 +65,33 @@ func (l *Logger) formatMessage(level, msg string) string {
 // Debug 调试日志
 func (l *Logger) Debug(msg string, args ...interface{}) {
 	if l.level <= DEBUG {
-		message := fmt.Sprintf(msg, args...)
-		l.logger.Println(l.formatMessage("DEBUG", message))
+		fmt.Println(l.formatMessage("DEBUG", fmt.Sprintf(msg, args...)))
 	}
 }
 
 // Info 信息日志
 func (l *Logger) Info(msg string, args ...interface{}) {
 	if l.level <= INFO {
-		message := fmt.Sprintf(msg, args...)
-		l.logger.Println(l.formatMessage("INFO", message))
+		fmt.Println(l.formatMessage("INFO", fmt.Sprintf(msg, args...)))
 	}
 }
 
 // Warn 警告日志
 func (l *Logger) Warn(msg string, args ...interface{}) {
 	if l.level <= WARN {
-		message := fmt.Sprintf(msg, args...)
-		l.logger.Println(l.formatMessage("WARN", message))
+		fmt.Println(l.formatMessage("WARN", fmt.Sprintf(msg, args...)))
 	}
 }
 
 // Error 错误日志
 func (l *Logger) Error(msg string, args ...interface{}) {
 	if l.level <= ERROR {
-		message := fmt.Sprintf(msg, args...)
-		l.logger.Println(l.formatMessage("ERROR", message))
+		fmt.Println(l.formatMessage("ERROR", fmt.Sprintf(msg, args...)))
 	}
 }
 
 // Fatal 致命错误日志
 func (l *Logger) Fatal(msg string, args ...interface{}) {
-	message := fmt.Sprintf(msg, args...)
-	l.logger.Println(l.formatMessage("FATAL", message))
+	fmt.Println(l.formatMessage("FATAL", fmt.Sprintf(msg, args...)))
 	os.Exit(1)
 }

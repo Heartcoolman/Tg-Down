@@ -186,7 +186,7 @@ func clearSessionAndExit() {
 	}
 
 	// 创建临时客户端以使用清除会话功能
-	log := logger.New("info")
+	log := logger.New(config.DefaultLogLevel)
 	client := telegram.New(cfg, log)
 
 	if err := client.ClearSession(); err != nil {

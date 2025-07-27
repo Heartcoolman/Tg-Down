@@ -92,7 +92,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	})
 }
 
-// authenticate 进行用户认证
+// Authenticate 进行用户认证
 func (c *Client) Authenticate(ctx context.Context) error {
 	c.logger.Info("开始认证流程...")
 
@@ -345,7 +345,11 @@ func (c *Client) DownloadFile(ctx context.Context, media *downloader.MediaInfo, 
 	if err != nil {
 		return fmt.Errorf("创建临时文件失败: %w", err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			c.logger.Error("关闭文件失败: %v", err)
+		}
+	}()
 
 	// 根据媒体类型构建下载位置
 	var location tg.InputFileLocationClass
@@ -395,7 +399,9 @@ func (c *Client) DownloadFile(ctx context.Context, media *downloader.MediaInfo, 
 		})
 
 		if err != nil {
-			os.Remove(tempPath) // 清理临时文件
+			if removeErr := os.Remove(tempPath); removeErr != nil {
+				c.logger.Error("清理临时文件失败: %v", removeErr)
+			}
 			return fmt.Errorf("下载文件块失败: %w", err)
 		}
 
@@ -403,22 +409,30 @@ func (c *Client) DownloadFile(ctx context.Context, media *downloader.MediaInfo, 
 		switch fd := fileData.(type) {
 		case *tg.UploadFile:
 			if _, err := file.Write(fd.Bytes); err != nil {
-				os.Remove(tempPath)
+				if removeErr := os.Remove(tempPath); removeErr != nil {
+					c.logger.Error("清理临时文件失败: %v", removeErr)
+				}
 				return fmt.Errorf("写入文件失败: %w", err)
 			}
 			offset += int64(len(fd.Bytes))
 		default:
-			os.Remove(tempPath)
+			if removeErr := os.Remove(tempPath); removeErr != nil {
+				c.logger.Error("清理临时文件失败: %v", removeErr)
+			}
 			return fmt.Errorf("未知的文件数据类型")
 		}
 	}
 
 	// 关闭文件
-	file.Close()
+	if err := file.Close(); err != nil {
+		c.logger.Error("关闭文件失败: %v", err)
+	}
 
 	// 重命名临时文件
 	if err := os.Rename(tempPath, filePath); err != nil {
-		os.Remove(tempPath)
+		if removeErr := os.Remove(tempPath); removeErr != nil {
+			c.logger.Error("清理临时文件失败: %v", removeErr)
+		}
 		return fmt.Errorf("重命名文件失败: %w", err)
 	}
 

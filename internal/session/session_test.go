@@ -54,7 +54,9 @@ func TestHasValidSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create test session file: %v", err)
 	}
-	file.Close()
+	if err := file.Close(); err != nil {
+		t.Fatalf("Failed to close test session file: %v", err)
+	}
 
 	// 空文件应该返回false
 	if manager.HasValidSession(phone) {
@@ -62,7 +64,7 @@ func TestHasValidSession(t *testing.T) {
 	}
 
 	// 写入一些内容
-	err = os.WriteFile(sessionPath, []byte("test content"), 0644)
+	err = os.WriteFile(sessionPath, []byte("test content"), 0600)
 	if err != nil {
 		t.Fatalf("Failed to write test session file: %v", err)
 	}
@@ -82,7 +84,7 @@ func TestClearSession(t *testing.T) {
 
 	// 创建一个会话文件
 	sessionPath := filepath.Join(tempDir, "session_+1234567890.json")
-	err := os.WriteFile(sessionPath, []byte("test content"), 0644)
+	err := os.WriteFile(sessionPath, []byte("test content"), 0600)
 	if err != nil {
 		t.Fatalf("Failed to create test session file: %v", err)
 	}
