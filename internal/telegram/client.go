@@ -1,3 +1,5 @@
+// Package telegram provides Telegram client functionality for Tg-Down application.
+// It handles authentication, chat management, and media downloading operations.
 package telegram
 
 import (
@@ -108,8 +110,8 @@ func (c *Client) Authenticate(ctx context.Context) error {
 	// 提示输入验证码
 	fmt.Printf("请输入验证码: ")
 	var code string
-	if _, err := fmt.Scanln(&code); err != nil {
-		return fmt.Errorf("读取验证码失败: %w", err)
+	if _, scanErr := fmt.Scanln(&code); scanErr != nil {
+		return fmt.Errorf("读取验证码失败: %w", scanErr)
 	}
 
 	// 进行SignIn
@@ -118,8 +120,8 @@ func (c *Client) Authenticate(ctx context.Context) error {
 		// 提示输入密码
 		fmt.Printf("请输入两步验证密码: ")
 		var password string
-		if _, err := fmt.Scanln(&password); err != nil {
-			return fmt.Errorf("读取密码失败: %w", err)
+		if _, scanErr := fmt.Scanln(&password); scanErr != nil {
+			return fmt.Errorf("读取密码失败: %w", scanErr)
 		}
 
 		// 使用密码进行认证

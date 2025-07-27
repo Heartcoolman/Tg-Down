@@ -113,7 +113,8 @@ func main() {
 	})
 
 	if err != nil {
-		log.Fatal("运行失败: %v", err)
+		log.Error("运行失败: %v", err)
+		os.Exit(1)
 	}
 
 	log.Info("程序退出")
@@ -140,7 +141,7 @@ func selectChat(ctx context.Context, client *telegram.Client, log *logger.Logger
 	// 让用户选择
 	fmt.Print("\n请选择聊天 (输入序号): ")
 	var choice int
-	if _, err := fmt.Scanln(&choice); err != nil {
+	if _, scanErr := fmt.Scanln(&choice); scanErr != nil {
 		return 0, fmt.Errorf("输入无效")
 	}
 

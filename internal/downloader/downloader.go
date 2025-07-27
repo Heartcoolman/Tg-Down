@@ -1,3 +1,5 @@
+// Package downloader provides media file downloading functionality for Tg-Down application.
+// It supports concurrent downloads with progress tracking and statistics.
 package downloader
 
 import (

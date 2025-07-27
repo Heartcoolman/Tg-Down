@@ -1,3 +1,5 @@
+// Package session provides session management functionality for Tg-Down application.
+// It handles Telegram session storage and client creation with persistent authentication.
 package session
 
 import (
@@ -5,9 +7,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"tg-down/internal/logger"
+
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
-	"tg-down/internal/logger"
 )
 
 // Manager 会话管理器

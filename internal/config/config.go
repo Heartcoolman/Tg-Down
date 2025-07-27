@@ -1,3 +1,5 @@
+// Package config provides configuration management for Tg-Down application.
+// It supports loading configuration from YAML files and environment variables.
 package config
 
 import (
