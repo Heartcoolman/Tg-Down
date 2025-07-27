@@ -160,14 +160,23 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 			return fmt.Errorf("unsafe temp file path: %s", tempPath)
 		}
 
-		file, err := os.Create(tempPath)
+		// 额外的路径安全检查
+		cleanTempPath := filepath.Clean(tempPath)
+		if strings.Contains(cleanTempPath, "..") || !strings.HasPrefix(cleanTempPath, filepath.Clean(d.downloadPath)) {
+			d.logger.Error("检测到不安全的路径: %s", tempPath)
+			d.updateStats(false, 0)
+			return fmt.Errorf("detected unsafe path: %s", tempPath)
+		}
+
+		file, err := os.Create(cleanTempPath)
 		if err != nil {
 			d.logger.Error("创建临时文件失败 %s: %v", fileName, err)
 			d.updateStats(false, 0)
 			return err
 		}
-		if err := file.Close(); err != nil {
-			d.logger.Error("关闭临时文件失败 %s: %v", fileName, err)
+		closeErr := file.Close()
+		if closeErr != nil {
+			d.logger.Error("关闭临时文件失败 %s: %v", fileName, closeErr)
 		}
 
 		// 模拟下载过程
