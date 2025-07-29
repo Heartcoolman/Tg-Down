@@ -76,7 +76,7 @@ func (cd *ChunkDownloader) DownloadToFile(
 	cd.logger.Info("Starting chunked download: %s (size: %d bytes)", filePath, size)
 
 	// Create directory if it doesn't exist
-	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(filePath), 0750); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -166,7 +166,9 @@ func (cd *ChunkDownloader) DownloadToFile(
 	for err := range errorChan {
 		if err != nil {
 			cd.logger.Error("Chunk download error: %v", err)
-			os.Remove(tempPath) // Clean up temp file
+			if remErr := os.Remove(tempPath); remErr != nil {
+				cd.logger.Error("Failed to remove temp file: %v", remErr)
+			}
 			return err
 		}
 	}
@@ -187,7 +189,9 @@ func (cd *ChunkDownloader) DownloadToFile(
 		cd.logger.Warn("重命名失败 (尝试 %d): %v", retry+1, renameErr)
 		time.Sleep(500 * time.Millisecond)
 	}
-	os.Remove(tempPath) // Clean up temp file
+	if remErr := os.Remove(tempPath); remErr != nil {
+		cd.logger.Error("Failed to remove temp file: %v", remErr)
+	}
 	return fmt.Errorf("failed to rename temp file after retries: %w", renameErr)
 
 	cd.logger.Info("Chunked download completed: %s", filePath)
