@@ -86,6 +86,58 @@ func (m *Manager) CreateClientWithSession(apiID int, apiHash, phone string) *tel
 	return client
 }
 
+// CreateClientWithSessionAndUpdates 创建带会话和Updates处理器的Telegram客户端
+func (m *Manager) CreateClientWithSessionAndUpdates(apiID int, apiHash, phone string, updateHandler telegram.UpdateHandler) *telegram.Client {
+	storage := m.GetSessionStorage(phone)
+	if storage == nil {
+		m.logger.Error("无法创建会话存储")
+		return nil
+	}
+
+	options := telegram.Options{
+		SessionStorage: storage,
+		UpdateHandler:  updateHandler,
+	}
+
+	client := telegram.NewClient(apiID, apiHash, options)
+	return client
+}
+
+// CreateClientWithMiddleware 创建带中间件的Telegram客户端
+func (m *Manager) CreateClientWithMiddleware(apiID int, apiHash, phone string, middlewares ...telegram.Middleware) *telegram.Client {
+	storage := m.GetSessionStorage(phone)
+	if storage == nil {
+		m.logger.Error("无法创建会话存储")
+		return nil
+	}
+
+	options := telegram.Options{
+		SessionStorage: storage,
+		Middlewares:    middlewares,
+	}
+
+	client := telegram.NewClient(apiID, apiHash, options)
+	return client
+}
+
+// CreateClientWithMiddlewareAndUpdates 创建带中间件和Updates处理器的Telegram客户端
+func (m *Manager) CreateClientWithMiddlewareAndUpdates(apiID int, apiHash, phone string, updateHandler telegram.UpdateHandler, middlewares ...telegram.Middleware) *telegram.Client {
+	storage := m.GetSessionStorage(phone)
+	if storage == nil {
+		m.logger.Error("无法创建会话存储")
+		return nil
+	}
+
+	options := telegram.Options{
+		SessionStorage: storage,
+		UpdateHandler:  updateHandler,
+		Middlewares:    middlewares,
+	}
+
+	client := telegram.NewClient(apiID, apiHash, options)
+	return client
+}
+
 // ClearSession 清除会话文件
 func (m *Manager) ClearSession(phone string) error {
 	sessionFile := filepath.Join(m.sessionDir, fmt.Sprintf("session_%s.json", phone))

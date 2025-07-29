@@ -5,6 +5,7 @@ go 1.21
 require (
 	github.com/gotd/td v0.88.0
 	github.com/joho/godotenv v1.5.1
+	golang.org/x/time v0.5.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

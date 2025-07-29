@@ -57,8 +57,67 @@ func main() {
 		cancel()
 	}()
 
-	// 创建Telegram客户端
-	client := telegram.New(cfg, log)
+	// 询问用户操作模式
+	mode := selectMode(log)
+
+	// 选择目标聊天
+	var targetChatID int64
+	if cfg.Chat.TargetID != 0 {
+		targetChatID = cfg.Chat.TargetID
+		log.Info("使用配置的聊天ID: %d", targetChatID)
+	} else {
+		// 创建临时客户端来选择聊天
+		tempClient := telegram.New(cfg, log)
+
+		// 连接并选择聊天
+		err = tempClient.Client.Run(ctx, func(ctx context.Context) error {
+			// 检查授权状态
+			status, authErr := tempClient.Client.Auth().Status(ctx)
+			if authErr != nil {
+				return fmt.Errorf("检查授权状态失败: %w", authErr)
+			}
+
+			if !status.Authorized {
+				// 需要登录
+				authErr := tempClient.Authenticate(ctx)
+				if authErr != nil {
+					return fmt.Errorf("认证失败: %w", authErr)
+				}
+			}
+
+			tempClient.API = tempClient.Client.API()
+			log.Info("成功连接到Telegram")
+
+			targetChatID, err = selectChat(ctx, tempClient, log)
+			if err != nil {
+				return fmt.Errorf("选择聊天失败: %w", err)
+			}
+
+			return nil
+		})
+
+		if err != nil {
+			log.Error("选择聊天失败: %v", err)
+			os.Exit(1)
+		}
+	}
+
+	// 根据模式创建合适的客户端
+	var client *telegram.Client
+	if mode == ModeMonitorNewMessages || mode == ModeDownloadAndMonitor {
+		// 需要实时监控，创建带Updates处理器的客户端
+		log.Info("创建带实时监控功能的客户端...")
+		client = telegram.NewWithUpdates(cfg, log, targetChatID)
+	} else {
+		// 只需要下载历史，创建普通客户端
+		log.Info("创建普通客户端...")
+		client = telegram.New(cfg, log)
+	}
+
+	if client == nil {
+		log.Error("创建客户端失败")
+		os.Exit(1)
+	}
 
 	// 连接到Telegram并运行主逻辑
 	log.Info("正在连接到Telegram...")
@@ -80,21 +139,6 @@ func main() {
 		client.API = client.Client.API()
 		log.Info("成功连接到Telegram")
 
-		// 选择目标聊天
-		var targetChatID int64
-		if cfg.Chat.TargetID != 0 {
-			targetChatID = cfg.Chat.TargetID
-			log.Info("使用配置的聊天ID: %d", targetChatID)
-		} else {
-			targetChatID, err = selectChat(ctx, client, log)
-			if err != nil {
-				return fmt.Errorf("选择聊天失败: %w", err)
-			}
-		}
-
-		// 询问用户操作模式
-		mode := selectMode(log)
-
 		switch mode {
 		case ModeDownloadHistory:
 			// 只下载历史媒体
@@ -105,9 +149,43 @@ func main() {
 			}
 
 		case ModeMonitorNewMessages:
-			// 只监控新消息
+			// 只监控新消息 - Updates处理器已在客户端创建时设置
 			log.Info("开始实时监控新消息...")
-			client.SetupRealTimeMonitoring(targetChatID)
+			log.Info("实时监控已启动，目标聊天ID: %d", targetChatID)
+
+			// 启动交互式监控
+			go func() {
+				fmt.Println("\n监控已启动！")
+				fmt.Println("输入命令:")
+				fmt.Println("  'check' - 手动检查新消息")
+				fmt.Println("  'status' - 查看监控状态")
+				fmt.Println("  'quit' - 退出程序")
+				fmt.Print("> ")
+
+				for {
+					var input string
+					if _, scanErr := fmt.Scanln(&input); scanErr != nil {
+						continue
+					}
+
+					switch input {
+					case "check":
+						log.Info("手动检查新消息...")
+						if checkErr := client.ManualCheckNewMessages(ctx, targetChatID); checkErr != nil {
+							log.Error("手动检查失败: %v", checkErr)
+						}
+					case "status":
+						log.Info("监控状态: 正在运行，目标聊天ID: %d", targetChatID)
+					case "quit":
+						log.Info("用户请求退出")
+						cancel()
+						return
+					default:
+						fmt.Println("未知命令，请输入 'check', 'status' 或 'quit'")
+					}
+					fmt.Print("> ")
+				}
+			}()
 
 		case ModeDownloadAndMonitor:
 			// 先下载历史，再监控新消息
@@ -116,8 +194,8 @@ func main() {
 			if downloadErr != nil {
 				log.Error("下载历史媒体失败: %v", downloadErr)
 			} else {
-				log.Info("历史媒体下载完成，开始实时监控...")
-				client.SetupRealTimeMonitoring(targetChatID)
+				log.Info("历史媒体下载完成，实时监控已自动启动")
+				log.Info("实时监控已启动，目标聊天ID: %d", targetChatID)
 			}
 		}
 
