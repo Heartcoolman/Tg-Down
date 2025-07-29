@@ -29,36 +29,54 @@ import (
 )
 
 const (
-	// API相关常量
-	DefaultDialogLimit  = 100
+	// DefaultDialogLimit is the default limit for dialog queries
+	DefaultDialogLimit = 100
+	// DefaultHistoryLimit is the default limit for history queries
 	DefaultHistoryLimit = 20
-	SingleMessageLimit  = 1
+	// DefaultMessageLimit is the default limit for message queries
+	DefaultMessageLimit = 20
+	// SingleMessageLimit is the limit for single message queries
+	SingleMessageLimit = 1
 
-	// 文件下载相关常量
-	ChunkSize           = 512 * 1024 // 512KB
-	MaxWorkers          = 4
-	MaxRetries          = 3
-	MaxRenameRetries    = 5
+	// ChunkSize is the default chunk size for file downloads
+	ChunkSize = 512 * 1024 // 512KB
+	// MaxWorkers is the maximum number of concurrent workers
+	MaxWorkers = 4
+	// MaxRetries is the maximum number of retry attempts
+	MaxRetries = 3
+	// MaxRenameRetries is the maximum number of file rename retry attempts
+	MaxRenameRetries = 5
+	// RenameSleepDuration is the sleep duration between rename retries
 	RenameSleepDuration = 500 * time.Millisecond
 
-	// 对齐和限制常量
-	APIAlignment   = 1024       // 1KB - Telegram API要求
-	ChunkAlignment = 4096       // 4KB对齐
-	MaxAPILimit    = 512 * 1024 // 512KB - Telegram API最大限制
+	// APIAlignment is the alignment requirement for Telegram API
+	APIAlignment = 1024 // 1KB - Telegram API要求
+	// ChunkAlignment is the chunk alignment for optimal performance
+	ChunkAlignment = 4096 // 4KB对齐
+	// MaxAPILimit is the maximum limit for Telegram API requests
+	MaxAPILimit = 512 * 1024 // 512KB - Telegram API最大限制
 
-	// 进度显示常量
-	ProgressInterval      = 1024 * 1024 // 每1MB显示进度
-	ProgressChunkInterval = 10          // 每10个块显示进度
+	// ProgressInterval is the interval for progress reporting
+	ProgressInterval = 1024 * 1024 // 每1MB显示进度
+	// ProgressChunkInterval is the chunk interval for progress reporting
+	ProgressChunkInterval = 10 // 每10个块显示进度
 
-	// 延迟和重试常量
-	BaseRetryDelay      = 1 * time.Second
+	// BaseRetryDelay is the default base delay for exponential backoff
+	BaseRetryDelay = 1 * time.Second
+	// FloodWaitMultiplier is the multiplier for flood wait delays
 	FloodWaitMultiplier = 3
 
-	// 消息相关常量
+	// MessagePreviewLength is the maximum length for message preview text
 	MessagePreviewLength = 50
 
-	// 时间戳相关常量
+	// UnixTimeBase is the base timestamp for Unix time calculations
 	UnixTimeBase = 0
+
+	// BytesPerKB is the number of bytes in a kilobyte
+	BytesPerKB = 1024
+
+	// ShortSleepDuration is a short sleep duration for retry operations
+	ShortSleepDuration = 100 * time.Millisecond
 )
 
 // Client Telegram客户端包装器
@@ -112,7 +130,7 @@ func New(cfg *config.Config, logger *logger.Logger) *Client {
 
 	// 创建分块下载器
 	chunkedDownloader := chunked.New(logger).
-		WithChunkSize(cfg.Download.ChunkSize * 1024). // 转换为字节
+		WithChunkSize(cfg.Download.ChunkSize * BytesPerKB). // 转换为字节
 		WithMaxWorkers(cfg.Download.MaxWorkers)
 
 	c := &Client{
@@ -168,7 +186,7 @@ func NewWithUpdates(cfg *config.Config, logger *logger.Logger, chatID int64) *Cl
 
 	// 创建分块下载器
 	chunkedDownloader := chunked.New(logger).
-		WithChunkSize(cfg.Download.ChunkSize * 1024). // 转换为字节
+		WithChunkSize(cfg.Download.ChunkSize * BytesPerKB). // 转换为字节
 		WithMaxWorkers(cfg.Download.MaxWorkers)
 
 	c := &Client{
@@ -186,12 +204,12 @@ func NewWithUpdates(cfg *config.Config, logger *logger.Logger, chatID int64) *Cl
 	dispatcher := tg.NewUpdateDispatcher()
 
 	// 注册新消息处理器
-	dispatcher.OnNewMessage(func(ctx context.Context, e tg.Entities, update *tg.UpdateNewMessage) error {
+	dispatcher.OnNewMessage(func(ctx context.Context, _ tg.Entities, update *tg.UpdateNewMessage) error {
 		return c.handleNewMessage(ctx, update, chatID)
 	})
 
 	// 注册新频道消息处理器
-	dispatcher.OnNewChannelMessage(func(ctx context.Context, e tg.Entities, update *tg.UpdateNewChannelMessage) error {
+	dispatcher.OnNewChannelMessage(func(ctx context.Context, _ tg.Entities, update *tg.UpdateNewChannelMessage) error {
 		return c.handleNewChannelMessage(ctx, update, chatID)
 	})
 
@@ -577,11 +595,10 @@ func (c *Client) DownloadFile(ctx context.Context, media *downloader.MediaInfo, 
 
 			// 使用分块下载器
 			return c.chunkedDownloader.DownloadToFile(ctx, downloadFunc, media.FileSize, filePath)
-		} else {
-			// 使用传统下载方式
-			c.logger.Info("使用传统方式下载文件: %s (大小: %d bytes)", media.FileName, media.FileSize)
-			return c.downloadFileTraditional(ctx, location, media.FileSize, filePath)
 		}
+		// 使用传统下载方式
+		c.logger.Info("使用传统方式下载文件: %s (大小: %d bytes)", media.FileName, media.FileSize)
+		return c.downloadFileTraditional(ctx, location, media.FileSize, filePath)
 	})
 }
 
@@ -595,8 +612,10 @@ func (c *Client) downloadFileTraditional(ctx context.Context, location tg.InputF
 		c.logger.Warn("发现已存在的临时文件，正在删除: %s", tempPath)
 		if removeErr := os.Remove(tempPath); removeErr != nil {
 			c.logger.Error("删除已存在临时文件失败: %v", removeErr)
-			time.Sleep(100 * time.Millisecond)
-			os.Remove(tempPath)
+			time.Sleep(ShortSleepDuration)
+			if removeErr := os.Remove(tempPath); removeErr != nil {
+				c.logger.Warn("删除临时文件失败: %v", removeErr)
+			}
 		}
 	}
 
@@ -614,7 +633,7 @@ func (c *Client) downloadFileTraditional(ctx context.Context, location tg.InputF
 			if closeErr := file.Close(); closeErr != nil {
 				c.logger.Error("关闭文件失败: %v", closeErr)
 			}
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(ShortSleepDuration)
 		}()
 
 		// 下载文件
@@ -690,128 +709,168 @@ func (c *Client) buildFileLocation(media *downloader.MediaInfo) (tg.InputFileLoc
 	}
 }
 
+// chunkJob 表示一个下载任务
+type chunkJob struct {
+	offset int64
+	size   int
+	index  int
+}
+
+// chunkResult 表示下载结果
+type chunkResult struct {
+	index int
+	data  []byte
+	err   error
+}
+
 // downloadFileChunksConcurrent 并发分块下载文件
 func (c *Client) downloadFileChunksConcurrent(
 	ctx context.Context,
 	file *os.File,
 	location tg.InputFileLocationClass,
 	fileSize int64,
-	tempPath string,
+	_ string, // tempPath parameter kept for interface compatibility but unused
 ) error {
 	c.logger.Info("开始并发下载，文件大小: %d bytes, 块大小: %d KB, 并发数: %d", fileSize, ChunkSize/APIAlignment, MaxWorkers)
 
-	// 计算总块数
 	totalChunks := int((fileSize + int64(ChunkSize) - 1) / int64(ChunkSize))
-
-	// 创建工作队列和结果通道
-	type chunkJob struct {
-		offset int64
-		size   int
-		index  int
-	}
-
-	type chunkResult struct {
-		index int
-		data  []byte
-		err   error
-	}
-
 	jobs := make(chan chunkJob, totalChunks)
 	results := make(chan chunkResult, totalChunks)
 
 	// 启动工作协程
+	c.startDownloadWorkers(ctx, location, jobs, results)
+
+	// 发送下载任务
+	c.generateDownloadJobs(jobs, totalChunks, fileSize)
+
+	// 收集结果并写入文件
+	return c.collectAndWriteResults(file, results, totalChunks)
+}
+
+// startDownloadWorkers 启动下载工作协程
+func (c *Client) startDownloadWorkers(
+	ctx context.Context,
+	location tg.InputFileLocationClass,
+	jobs <-chan chunkJob,
+	results chan<- chunkResult,
+) {
 	for i := 0; i < MaxWorkers; i++ {
 		go func(workerID int) {
 			for job := range jobs {
-				c.logger.Debug("Worker %d 开始下载块 %d (offset: %d, size: %d)", workerID, job.index, job.offset, job.size)
-
-				var data []byte
-				var err error
-
-				// 重试机制
-				for retry := 0; retry < MaxRetries; retry++ {
-					if retry > 0 {
-						delay := time.Duration(retry) * BaseRetryDelay
-						c.logger.Debug("Worker %d 重试块 %d (第%d次)", workerID, job.index, retry)
-						time.Sleep(delay)
-					}
-
-					fileData, downloadErr := c.API.UploadGetFile(ctx, &tg.UploadGetFileRequest{
-						Precise:  true,
-						Location: location,
-						Offset:   job.offset,
-						Limit:    job.size,
-					})
-
-					if downloadErr == nil {
-						if uploadFile, ok := fileData.(*tg.UploadFile); ok {
-							data = uploadFile.Bytes
-							break
-						} else {
-							err = fmt.Errorf("未知的文件数据类型")
-							break
-						}
-					}
-
-					// 检查API限制错误
-					errStr := downloadErr.Error()
-					if strings.Contains(errStr, "LIMIT_INVALID") ||
-						strings.Contains(errStr, "FLOOD_WAIT") ||
-						strings.Contains(errStr, "420") {
-						c.logger.Warn("Worker %d 遇到API限制: %v", workerID, downloadErr)
-						if strings.Contains(errStr, "FLOOD_WAIT") {
-							time.Sleep(time.Duration(retry+1) * FloodWaitMultiplier * BaseRetryDelay)
-						}
-						err = downloadErr
-						continue
-					}
-
-					err = downloadErr
-				}
-
-				results <- chunkResult{
-					index: job.index,
-					data:  data,
-					err:   err,
-				}
+				result := c.downloadChunkWithRetry(ctx, location, job, workerID)
+				results <- result
 			}
 		}(i)
 	}
+}
 
-	// 发送下载任务
+// downloadChunkWithRetry 带重试的下载单个块
+func (c *Client) downloadChunkWithRetry(ctx context.Context, location tg.InputFileLocationClass, job chunkJob, workerID int) chunkResult {
+	c.logger.Debug("Worker %d 开始下载块 %d (offset: %d, size: %d)", workerID, job.index, job.offset, job.size)
+
+	var data []byte
+	var err error
+
+	for retry := 0; retry < MaxRetries; retry++ {
+		if retry > 0 {
+			delay := time.Duration(retry) * BaseRetryDelay
+			c.logger.Debug("Worker %d 重试块 %d (第%d次)", workerID, job.index, retry)
+			time.Sleep(delay)
+		}
+
+		data, err = c.downloadSingleChunk(ctx, location, job.offset, job.size)
+		if err == nil {
+			break
+		}
+
+		if c.isAPILimitError(err) {
+			c.logger.Warn("Worker %d 遇到API限制: %v", workerID, err)
+			c.handleAPILimitDelay(err, retry)
+			continue
+		}
+
+		// 其他错误直接退出重试
+		break
+	}
+
+	return chunkResult{
+		index: job.index,
+		data:  data,
+		err:   err,
+	}
+}
+
+// downloadSingleChunk 下载单个块
+func (c *Client) downloadSingleChunk(ctx context.Context, location tg.InputFileLocationClass, offset int64, size int) ([]byte, error) {
+	fileData, err := c.API.UploadGetFile(ctx, &tg.UploadGetFileRequest{
+		Precise:  true,
+		Location: location,
+		Offset:   offset,
+		Limit:    size,
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	uploadFile, ok := fileData.(*tg.UploadFile)
+	if !ok {
+		return nil, fmt.Errorf("未知的文件数据类型")
+	}
+
+	return uploadFile.Bytes, nil
+}
+
+// isAPILimitError 检查是否为API限制错误
+func (c *Client) isAPILimitError(err error) bool {
+	errStr := err.Error()
+	return strings.Contains(errStr, "LIMIT_INVALID") ||
+		strings.Contains(errStr, "FLOOD_WAIT") ||
+		strings.Contains(errStr, "420")
+}
+
+// handleAPILimitDelay 处理API限制错误的延迟
+func (c *Client) handleAPILimitDelay(err error, retry int) {
+	if strings.Contains(err.Error(), "FLOOD_WAIT") {
+		time.Sleep(time.Duration(retry+1) * FloodWaitMultiplier * BaseRetryDelay)
+	}
+}
+
+// generateDownloadJobs 生成下载任务
+func (c *Client) generateDownloadJobs(jobs chan<- chunkJob, totalChunks int, fileSize int64) {
 	go func() {
 		defer close(jobs)
-
 		for i := 0; i < totalChunks; i++ {
-			offset := int64(i) * int64(ChunkSize)
-
-			// 确保偏移量是1KB对齐的
-			if offset%ChunkAlignment != 0 {
-				offset = (offset / ChunkAlignment) * ChunkAlignment
-			}
-
-			size := ChunkSize
-			if offset+int64(size) > fileSize {
-				size = int(fileSize - offset)
-			}
-
-			// 确保块大小也是4KB对齐的
-			if size%ChunkAlignment != 0 {
-				size = (size / ChunkAlignment) * ChunkAlignment
-				if size == 0 {
-					size = ChunkAlignment // 最小4KB
-				}
-			}
-
-			jobs <- chunkJob{
-				offset: offset,
-				size:   size,
-				index:  i,
-			}
+			offset, size := c.calculateChunkParams(i, fileSize)
+			jobs <- chunkJob{offset: offset, size: size, index: i}
 		}
 	}()
+}
 
-	// 收集结果并写入文件
+// calculateChunkParams 计算对齐的偏移量和大小
+func (c *Client) calculateChunkParams(i int, fileSize int64) (offset int64, size int) {
+	offset = int64(i) * int64(ChunkSize)
+	if offset%ChunkAlignment != 0 {
+		offset = (offset / ChunkAlignment) * ChunkAlignment
+	}
+
+	size = ChunkSize
+	if offset+int64(size) > fileSize {
+		size = int(fileSize - offset)
+	}
+
+	if size%ChunkAlignment != 0 {
+		size = (size / ChunkAlignment) * ChunkAlignment
+		if size == 0 {
+			size = ChunkAlignment
+		}
+	}
+
+	return offset, size
+}
+
+// collectAndWriteResults 收集结果并写入文件
+func (c *Client) collectAndWriteResults(file *os.File, results <-chan chunkResult, totalChunks int) error {
 	chunks := make([][]byte, totalChunks)
 	var completedChunks int
 	var totalBytes int64
@@ -826,9 +885,8 @@ func (c *Client) downloadFileChunksConcurrent(
 		completedChunks++
 		totalBytes += int64(len(result.data))
 
-		// 显示进度
-		progress := float64(completedChunks) / float64(totalChunks) * 100
 		if completedChunks%ProgressChunkInterval == 0 || completedChunks == totalChunks {
+			progress := float64(completedChunks) / float64(totalChunks) * 100
 			c.logger.Info("下载进度: %.1f%% (%d/%d 块)", progress, completedChunks, totalChunks)
 		}
 	}
@@ -839,9 +897,7 @@ func (c *Client) downloadFileChunksConcurrent(
 		if chunk == nil {
 			return fmt.Errorf("块 %d 数据为空", i)
 		}
-
-		_, err := file.Write(chunk)
-		if err != nil {
+		if _, err := file.Write(chunk); err != nil {
 			return fmt.Errorf("写入块 %d 失败: %v", i, err)
 		}
 	}
@@ -852,12 +908,13 @@ func (c *Client) downloadFileChunksConcurrent(
 	c.logger.Info("并发下载完成，总大小: %d bytes", totalBytes)
 	return nil
 }
+
 func (c *Client) downloadFileChunks(
 	ctx context.Context,
 	file *os.File,
 	location tg.InputFileLocationClass,
 	fileSize int64,
-	tempPath string,
+	_ string, // tempPath parameter kept for interface compatibility but unused
 ) error {
 	var offset int64
 
@@ -1010,50 +1067,6 @@ func (c *Client) ManualCheckNewMessages(ctx context.Context, chatID int64) error
 	return nil
 }
 
-// startRealTimeMonitor 启动实时Updates监控（已废弃，保留兼容性）
-func (c *Client) startRealTimeMonitor() {
-	c.logger.Info("实时监控已通过Updates处理器启动")
-}
-
-// handleUpdates 处理Telegram Updates
-func (c *Client) handleUpdates(ctx context.Context, updates tg.UpdatesClass) error {
-	switch u := updates.(type) {
-	case *tg.Updates:
-		for _, update := range u.Updates {
-			if err := c.processUpdate(ctx, update); err != nil {
-				c.logger.Error("处理更新失败: %v", err)
-			}
-		}
-	case *tg.UpdateShort:
-		if err := c.processUpdate(ctx, u.Update); err != nil {
-			c.logger.Error("处理短更新失败: %v", err)
-		}
-	case *tg.UpdateShortMessage:
-		// 处理短消息更新
-		c.logger.Debug("收到短消息更新，消息ID: %d", u.ID)
-	case *tg.UpdateShortChatMessage:
-		// 处理短聊天消息更新
-		c.logger.Debug("收到短聊天消息更新，消息ID: %d", u.ID)
-	}
-
-	return nil
-}
-
-// processUpdate 处理单个Update
-func (c *Client) processUpdate(ctx context.Context, update tg.UpdateClass) error {
-	switch u := update.(type) {
-	case *tg.UpdateNewMessage:
-		c.logger.Debug("收到新消息更新")
-		return c.handleNewMessage(ctx, u, c.targetChatID)
-	case *tg.UpdateNewChannelMessage:
-		c.logger.Debug("收到新频道消息更新")
-		return c.handleNewChannelMessage(ctx, u, c.targetChatID)
-	default:
-		// 忽略其他类型的更新
-		return nil
-	}
-}
-
 // getLastMessageID 获取聊天中最新消息的ID
 func (c *Client) getLastMessageID(ctx context.Context, chatID int64) int {
 	inputPeer := &tg.InputPeerChat{ChatID: chatID}
@@ -1094,11 +1107,10 @@ func (c *Client) checkForNewMessages(ctx context.Context, lastMessageID int) err
 	c.logger.Debug("检查聊天 %d 中比消息ID %d 更新的消息", c.targetChatID, lastMessageID)
 
 	// 获取比lastMessageID更新的消息
-	// OffsetID为0表示从最新消息开始获取
 	history, err := c.API.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
 		Peer:     inputPeer,
-		OffsetID: 0,  // 从最新消息开始
-		Limit:    20, // 增加检查数量
+		OffsetID: 0,
+		Limit:    DefaultMessageLimit,
 	})
 
 	if err != nil {
@@ -1174,8 +1186,8 @@ func (c *Client) checkForNewMessages(ctx context.Context, lastMessageID int) err
 // getMessagePreview 获取消息预览文本
 func (c *Client) getMessagePreview(msg *tg.Message) string {
 	if msg.Message != "" {
-		if len(msg.Message) > 50 {
-			return msg.Message[:50] + "..."
+		if len(msg.Message) > MessagePreviewLength {
+			return msg.Message[:MessagePreviewLength] + "..."
 		}
 		return msg.Message
 	}
@@ -1262,29 +1274,24 @@ func (c *Client) createMediaInfo(msg *tg.Message) *downloader.MediaInfo {
 	return nil
 }
 
-// handleNewMessage 处理新消息
-func (c *Client) handleNewMessage(ctx context.Context, update *tg.UpdateNewMessage, targetChatID int64) error {
-	message, ok := update.Message.(*tg.Message)
-	if !ok {
-		return nil
-	}
-
+// handleMessage 通用消息处理函数
+func (c *Client) handleMessage(_ context.Context, message *tg.Message, targetChatID int64, messageType string) error {
 	// 先检查是否来自目标聊天，避免刷屏
 	if !c.isFromTargetChat(message, targetChatID) {
 		return nil
 	}
 
 	// 只有来自目标聊天的消息才显示日志
-	c.logger.Info("🔔 收到目标聊天的新消息！")
-	c.logger.Info("📨 处理消息 ID: %d", message.ID)
+	c.logger.Info("🔔 收到目标%s的新消息！", messageType)
+	c.logger.Info("📨 处理%s消息 ID: %d", messageType, message.ID)
 
 	// 检查消息是否包含媒体
 	if !c.hasMedia(message) {
-		c.logger.Info("📝 消息不包含媒体，内容: %s", c.getMessagePreview(message))
+		c.logger.Info("📝 %s消息不包含媒体，内容: %s", messageType, c.getMessagePreview(message))
 		return nil
 	}
 
-	c.logger.Info("🎬 检测到新媒体消息，消息ID: %d, 内容: %s", message.ID, c.getMessagePreview(message))
+	c.logger.Info("🎬 检测到%s新媒体消息，消息ID: %d, 内容: %s", messageType, message.ID, c.getMessagePreview(message))
 
 	// 创建媒体信息
 	mediaInfo := c.createMediaInfo(message)
@@ -1306,48 +1313,22 @@ func (c *Client) handleNewMessage(ctx context.Context, update *tg.UpdateNewMessa
 	return nil
 }
 
+// handleNewMessage 处理新消息
+func (c *Client) handleNewMessage(ctx context.Context, update *tg.UpdateNewMessage, targetChatID int64) error {
+	message, ok := update.Message.(*tg.Message)
+	if !ok {
+		return nil
+	}
+	return c.handleMessage(ctx, message, targetChatID, "聊天")
+}
+
 // handleNewChannelMessage 处理频道新消息
 func (c *Client) handleNewChannelMessage(ctx context.Context, update *tg.UpdateNewChannelMessage, targetChatID int64) error {
 	message, ok := update.Message.(*tg.Message)
 	if !ok {
 		return nil
 	}
-
-	// 先检查是否来自目标频道，避免刷屏
-	if !c.isFromTargetChat(message, targetChatID) {
-		return nil
-	}
-
-	// 只有来自目标频道的消息才显示日志
-	c.logger.Info("🔔 收到目标频道的新消息！")
-	c.logger.Info("📨 处理频道消息 ID: %d", message.ID)
-
-	// 检查消息是否包含媒体
-	if !c.hasMedia(message) {
-		c.logger.Info("📝 频道消息不包含媒体，内容: %s", c.getMessagePreview(message))
-		return nil
-	}
-
-	c.logger.Info("🎬 检测到频道新媒体消息，消息ID: %d, 内容: %s", message.ID, c.getMessagePreview(message))
-
-	// 创建媒体信息
-	mediaInfo := c.createMediaInfo(message)
-	if mediaInfo == nil {
-		c.logger.Error("无法创建媒体信息")
-		return nil
-	}
-
-	c.logger.Info("媒体信息创建成功: %+v", mediaInfo)
-
-	// 下载媒体文件
-	go func() {
-		downloadCtx := context.Background()
-		c.logger.Info("开始下载媒体文件: %s", mediaInfo.FileName)
-		c.downloader.DownloadSingle(downloadCtx, mediaInfo)
-		c.logger.Info("媒体文件下载任务已提交: %s", mediaInfo.FileName)
-	}()
-
-	return nil
+	return c.handleMessage(ctx, message, targetChatID, "频道")
 }
 
 // isFromTargetChat 检查消息是否来自目标聊天

@@ -2,13 +2,10 @@ run:
   timeout: 5m
   issues-exit-code: 1
   tests: true
-  skip-dirs:
-    - vendor
-  skip-files:
-    - ".*\\.pb\\.go$"
 
 output:
-  format: colored-line-number
+  formats:
+    - format: colored-line-number
   print-issued-lines: true
   print-linter-name: true
 
@@ -23,13 +20,15 @@ linters-settings:
           - github.com/gotd/td
           - github.com/joho/godotenv
           - gopkg.in/yaml.v3
+          - golang.org/x/time/rate
           - tg-down/internal/config
           - tg-down/internal/logger
           - tg-down/internal/telegram
           - tg-down/internal/downloader
           - tg-down/internal/session
-  govet:
-    check-shadowing: true
+          - tg-down/internal/middleware/floodwait
+          - tg-down/internal/middleware/ratelimit
+          - tg-down/internal/retry
   revive:
     min-confidence: 0
   gocyclo:
@@ -103,6 +102,10 @@ linters:
     - whitespace
 
 issues:
+  exclude-dirs:
+    - vendor
+  exclude-files:
+    - ".*\\.pb\\.go$"
   exclude-rules:
     - path: _test\.go
       linters:
@@ -112,6 +115,12 @@ issues:
     - path: cmd/
       linters:
         - gochecknoinits
+    - text: "is unused"
+      linters:
+        - unused
+    - text: "parameter .* seems to be unused"
+      linters:
+        - unparam
   exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0
