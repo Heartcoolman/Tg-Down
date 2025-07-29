@@ -193,9 +193,6 @@ func (cd *ChunkDownloader) DownloadToFile(
 		cd.logger.Error("Failed to remove temp file: %v", remErr)
 	}
 	return fmt.Errorf("failed to rename temp file after retries: %w", renameErr)
-
-	cd.logger.Info("Chunked download completed: %s", filePath)
-	return nil
 }
 
 // chunkJob represents a single chunk download job
