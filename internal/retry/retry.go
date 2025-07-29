@@ -4,9 +4,11 @@ package retry
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"math"
-	"math/rand"
+	"math/big"
+	"strings"
 	"time"
 
 	"tg-down/internal/logger"
@@ -16,11 +18,20 @@ const (
 	// DefaultMaxRetries is the default maximum number of retries
 	DefaultMaxRetries = 3
 	// DefaultBaseDelay is the default base delay for exponential backoff
-	DefaultBaseDelay = time.Second
+	DefaultBaseDelay = 1 * time.Second
 	// DefaultMaxDelay is the default maximum delay between retries
 	DefaultMaxDelay = 30 * time.Second
 	// DefaultJitterFactor is the default jitter factor to add randomness
 	DefaultJitterFactor = 0.1
+
+	// ExponentialBackoffBase is the base for exponential backoff calculation
+	ExponentialBackoffBase = 2.0
+	// JitterMultiplier is used for jitter calculation
+	JitterMultiplier = 2.0
+	// JitterOffset is used to center jitter around zero
+	JitterOffset = 1.0
+	// RandomPrecision is the precision for random number generation
+	RandomPrecision = 1000
 )
 
 // Config holds retry configuration
@@ -57,40 +68,23 @@ func DefaultShouldRetry(err error) bool {
 	errStr := err.Error()
 
 	// Network-related errors
-	if contains(errStr, "connection") ||
-		contains(errStr, "timeout") ||
-		contains(errStr, "network") ||
-		contains(errStr, "temporary") {
+	if strings.Contains(errStr, "connection") ||
+		strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "network") ||
+		strings.Contains(errStr, "temporary") {
 		return true
 	}
 
 	// Telegram-specific errors that should be retried
-	if contains(errStr, "INTERNAL_SERVER_ERROR") ||
-		contains(errStr, "NETWORK_MIGRATE") ||
-		contains(errStr, "PHONE_MIGRATE") ||
-		contains(errStr, "FILE_MIGRATE") ||
-		contains(errStr, "USER_MIGRATE") ||
-		contains(errStr, "STATS_MIGRATE") {
+	if strings.Contains(errStr, "INTERNAL_SERVER_ERROR") ||
+		strings.Contains(errStr, "NETWORK_MIGRATE") ||
+		strings.Contains(errStr, "PHONE_MIGRATE") ||
+		strings.Contains(errStr, "FILE_MIGRATE") ||
+		strings.Contains(errStr, "USER_MIGRATE") ||
+		strings.Contains(errStr, "STATS_MIGRATE") {
 		return true
 	}
 
-	return false
-}
-
-// contains checks if a string contains a substring (case-insensitive)
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) &&
-		(s == substr ||
-			(len(s) > len(substr) &&
-				anySubstring(s, substr)))
-}
-
-func anySubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
 	return false
 }
 
@@ -183,7 +177,7 @@ func (r *Retrier) DoWithResult(ctx context.Context, fn func() (interface{}, erro
 // calculateDelay calculates the delay for the given attempt using exponential backoff with jitter
 func (r *Retrier) calculateDelay(attempt int) time.Duration {
 	// Exponential backoff: baseDelay * 2^attempt
-	delay := float64(r.config.BaseDelay) * math.Pow(2, float64(attempt))
+	delay := float64(r.config.BaseDelay) * math.Pow(ExponentialBackoffBase, float64(attempt))
 
 	// Apply maximum delay limit
 	if delay > float64(r.config.MaxDelay) {
@@ -192,7 +186,14 @@ func (r *Retrier) calculateDelay(attempt int) time.Duration {
 
 	// Add jitter to avoid thundering herd
 	if r.config.JitterFactor > 0 {
-		jitter := delay * r.config.JitterFactor * (rand.Float64()*2 - 1) // Random between -jitterFactor and +jitterFactor
+		// Use crypto/rand for secure random number generation
+		randomBig, err := rand.Int(rand.Reader, big.NewInt(RandomPrecision))
+		if err != nil {
+			// Fallback to no jitter if crypto/rand fails
+			return time.Duration(delay)
+		}
+		randomFloat := float64(randomBig.Int64()) / RandomPrecision                             // Convert to 0.0-1.0 range
+		jitter := delay * r.config.JitterFactor * (randomFloat*JitterMultiplier - JitterOffset) // Random between -jitterFactor and +jitterFactor
 		delay += jitter
 
 		// Ensure delay is not negative

@@ -38,7 +38,7 @@ func New(logger *logger.Logger) *Waiter {
 		maxRetries: DefaultMaxRetries,
 		maxWait:    DefaultMaxWait,
 		logger:     logger,
-		onWait:     func(ctx context.Context, duration time.Duration) {},
+		onWait:     func(_ context.Context, _ time.Duration) {},
 	}
 }
 
