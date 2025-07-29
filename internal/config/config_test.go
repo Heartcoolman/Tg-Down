@@ -7,9 +7,9 @@ import (
 
 // 测试常量
 const (
-	TestAPIID = 12345
+	TestAPIID   = 12345
 	TestAPIHash = "test_hash"
-	TestPhone = "+1234567890"
+	TestPhone   = "+1234567890"
 )
 
 func TestLoadConfig(t *testing.T) {
