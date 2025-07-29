@@ -22,11 +22,13 @@ const (
 
 // Config 应用配置结构
 type Config struct {
-	API      APIConfig      `yaml:"api"`
-	Download DownloadConfig `yaml:"download"`
-	Chat     ChatConfig     `yaml:"chat"`
-	Log      LogConfig      `yaml:"log"`
-	Session  SessionConfig  `yaml:"session"`
+	API       APIConfig       `yaml:"api"`
+	Download  DownloadConfig  `yaml:"download"`
+	Chat      ChatConfig      `yaml:"chat"`
+	Log       LogConfig       `yaml:"log"`
+	Session   SessionConfig   `yaml:"session"`
+	Retry     RetryConfig     `yaml:"retry"`
+	RateLimit RateLimitConfig `yaml:"rate_limit"`
 }
 
 // APIConfig Telegram API配置
@@ -41,6 +43,22 @@ type DownloadConfig struct {
 	Path          string `yaml:"path"`
 	MaxConcurrent int    `yaml:"max_concurrent"`
 	BatchSize     int    `yaml:"batch_size"`
+	ChunkSize     int    `yaml:"chunk_size"`     // 分块大小 (KB)
+	MaxWorkers    int    `yaml:"max_workers"`    // 并行下载工作线程数
+	UseChunked    bool   `yaml:"use_chunked"`    // 是否启用分块下载
+}
+
+// RetryConfig 重试配置
+type RetryConfig struct {
+	MaxRetries int `yaml:"max_retries"` // 最大重试次数
+	BaseDelay  int `yaml:"base_delay"`  // 基础延迟 (秒)
+	MaxDelay   int `yaml:"max_delay"`   // 最大延迟 (秒)
+}
+
+// RateLimitConfig 速率限制配置
+type RateLimitConfig struct {
+	RequestsPerSecond float64 `yaml:"requests_per_second"` // 每秒请求数
+	BurstSize         int     `yaml:"burst_size"`          // 突发大小
 }
 
 // ChatConfig 聊天配置
@@ -109,6 +127,8 @@ func loadFromEnv(config *Config) {
 	loadChatConfig(config)
 	loadLogConfig(config)
 	loadSessionConfig(config)
+	loadRetryConfig(config)
+	loadRateLimitConfig(config)
 }
 
 // loadAPIConfig 加载API配置
@@ -145,6 +165,24 @@ func loadDownloadConfig(config *Config) {
 			config.Download.BatchSize = batch
 		}
 	}
+
+	if chunkSize := os.Getenv("CHUNK_SIZE"); chunkSize != "" {
+		if chunk, err := strconv.Atoi(chunkSize); err == nil {
+			config.Download.ChunkSize = chunk
+		}
+	}
+
+	if maxWorkers := os.Getenv("MAX_WORKERS"); maxWorkers != "" {
+		if workers, err := strconv.Atoi(maxWorkers); err == nil {
+			config.Download.MaxWorkers = workers
+		}
+	}
+
+	if useChunked := os.Getenv("USE_CHUNKED"); useChunked != "" {
+		if chunked, err := strconv.ParseBool(useChunked); err == nil {
+			config.Download.UseChunked = chunked
+		}
+	}
 }
 
 // loadChatConfig 加载聊天配置
@@ -170,6 +208,42 @@ func loadSessionConfig(config *Config) {
 	}
 }
 
+// loadRetryConfig 加载重试配置
+func loadRetryConfig(config *Config) {
+	if maxRetries := os.Getenv("MAX_RETRIES"); maxRetries != "" {
+		if retries, err := strconv.Atoi(maxRetries); err == nil {
+			config.Retry.MaxRetries = retries
+		}
+	}
+
+	if baseDelay := os.Getenv("BASE_DELAY"); baseDelay != "" {
+		if delay, err := strconv.Atoi(baseDelay); err == nil {
+			config.Retry.BaseDelay = delay
+		}
+	}
+
+	if maxDelay := os.Getenv("MAX_DELAY"); maxDelay != "" {
+		if delay, err := strconv.Atoi(maxDelay); err == nil {
+			config.Retry.MaxDelay = delay
+		}
+	}
+}
+
+// loadRateLimitConfig 加载速率限制配置
+func loadRateLimitConfig(config *Config) {
+	if requestsPerSecond := os.Getenv("REQUESTS_PER_SECOND"); requestsPerSecond != "" {
+		if rps, err := strconv.ParseFloat(requestsPerSecond, 64); err == nil {
+			config.RateLimit.RequestsPerSecond = rps
+		}
+	}
+
+	if burstSize := os.Getenv("BURST_SIZE"); burstSize != "" {
+		if burst, err := strconv.Atoi(burstSize); err == nil {
+			config.RateLimit.BurstSize = burst
+		}
+	}
+}
+
 // setDefaults 设置默认值
 func setDefaults(config *Config) {
 	if config.Download.Path == "" {
@@ -181,6 +255,31 @@ func setDefaults(config *Config) {
 	if config.Download.BatchSize == 0 {
 		config.Download.BatchSize = 100
 	}
+	if config.Download.ChunkSize == 0 {
+		config.Download.ChunkSize = 512 // 512KB
+	}
+	if config.Download.MaxWorkers == 0 {
+		config.Download.MaxWorkers = 4
+	}
+	// UseChunked 默认为 false，让用户显式启用
+
+	if config.Retry.MaxRetries == 0 {
+		config.Retry.MaxRetries = 3
+	}
+	if config.Retry.BaseDelay == 0 {
+		config.Retry.BaseDelay = 1 // 1秒
+	}
+	if config.Retry.MaxDelay == 0 {
+		config.Retry.MaxDelay = 30 // 30秒
+	}
+
+	if config.RateLimit.RequestsPerSecond == 0 {
+		config.RateLimit.RequestsPerSecond = 1.0 // 1 request per second
+	}
+	if config.RateLimit.BurstSize == 0 {
+		config.RateLimit.BurstSize = 2
+	}
+
 	if config.Log.Level == "" {
 		config.Log.Level = DefaultLogLevel
 	}
