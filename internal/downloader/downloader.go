@@ -21,6 +21,8 @@ const (
 	DirectoryPermission = 0750
 	// DownloadDelayMs is the simulated download delay in milliseconds
 	DownloadDelayMs = 100
+	// MegabyteDivisor is the divisor for converting bytes to megabytes
+	MegabyteDivisor = 1024 * 1024
 )
 
 // MediaInfo 媒体文件信息
@@ -281,6 +283,20 @@ func (d *Downloader) getFileExtension(mimeType string) string {
 	}
 }
 
+// DownloadSingle 下载单个媒体文件（用于实时监控）
+func (d *Downloader) DownloadSingle(ctx context.Context, media *MediaInfo) {
+	d.stats.mu.Lock()
+	d.stats.Total++
+	d.stats.TotalSize += media.FileSize
+	d.stats.mu.Unlock()
+
+	d.logger.Info("检测到新媒体文件，开始下载: %s", media.FileName)
+
+	if err := d.DownloadMedia(ctx, media); err != nil {
+		d.logger.Error("下载新媒体文件失败: %v", err)
+	}
+}
+
 // DownloadBatch 批量下载媒体文件
 func (d *Downloader) DownloadBatch(ctx context.Context, mediaList []*MediaInfo) {
 	d.stats.mu.Lock()
@@ -316,6 +332,6 @@ func (d *Downloader) PrintStats() {
 	d.logger.Info("  已下载: %d", stats.Downloaded)
 	d.logger.Info("  失败: %d", stats.Failed)
 	d.logger.Info("  跳过: %d", stats.Skipped)
-	d.logger.Info("  总大小: %.2f MB", float64(stats.TotalSize)/(1024*1024))
-	d.logger.Info("  已下载大小: %.2f MB", float64(stats.DownloadedSize)/(1024*1024))
+	d.logger.Info("  总大小: %.2f MB", float64(stats.TotalSize)/MegabyteDivisor)
+	d.logger.Info("  已下载大小: %.2f MB", float64(stats.DownloadedSize)/MegabyteDivisor)
 }

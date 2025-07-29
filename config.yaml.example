@@ -7,6 +7,9 @@ download:
   path: "./downloads"  # 下载路径
   max_concurrent: 5    # 最大并发下载数
   batch_size: 100      # 批量处理大小
+  chunk_size: 512      # 分块下载大小 (KB)
+  max_workers: 4       # 分块下载最大工作线程数
+  use_chunked: true    # 是否启用分块下载 (大于1MB的文件)
   
 chat:
   target_id: 0  # 目标群组ID (可选)
@@ -16,3 +19,14 @@ log:
 
 session:
   dir: "./sessions"  # 会话文件保存目录
+
+# 重试机制配置
+retry:
+  max_retries: 3       # 最大重试次数
+  base_delay: 1        # 基础延迟时间 (秒)
+  max_delay: 30        # 最大延迟时间 (秒)
+
+# 速率限制配置
+rate_limit:
+  requests_per_second: 5.0  # 每秒请求数
+  burst_size: 10            # 突发请求大小
