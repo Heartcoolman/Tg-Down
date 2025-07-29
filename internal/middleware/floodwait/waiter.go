@@ -64,7 +64,7 @@ func (w *Waiter) WithCallback(callback func(ctx context.Context, duration time.D
 func (w *Waiter) Handle(next tg.Invoker) telegram.InvokeFunc {
 	return func(ctx context.Context, input bin.Encoder, output bin.Decoder) error {
 		var lastErr error
-		
+
 		for attempt := 0; attempt <= w.maxRetries; attempt++ {
 			err := next.Invoke(ctx, input, output)
 			if err == nil {
@@ -99,7 +99,7 @@ func (w *Waiter) Handle(next tg.Invoker) telegram.InvokeFunc {
 			}
 
 			w.logger.Warn("Flood wait detected, waiting %v (attempt %d/%d)", waitDuration, attempt+1, w.maxRetries+1)
-			
+
 			// Call the callback if set
 			w.onWait(ctx, waitDuration)
 

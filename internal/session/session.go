@@ -87,7 +87,12 @@ func (m *Manager) CreateClientWithSession(apiID int, apiHash, phone string) *tel
 }
 
 // CreateClientWithSessionAndUpdates 创建带会话和Updates处理器的Telegram客户端
-func (m *Manager) CreateClientWithSessionAndUpdates(apiID int, apiHash, phone string, updateHandler telegram.UpdateHandler) *telegram.Client {
+func (m *Manager) CreateClientWithSessionAndUpdates(
+	apiID int,
+	apiHash string,
+	phone string,
+	updateHandler telegram.UpdateHandler,
+) *telegram.Client {
 	storage := m.GetSessionStorage(phone)
 	if storage == nil {
 		m.logger.Error("无法创建会话存储")
@@ -121,7 +126,13 @@ func (m *Manager) CreateClientWithMiddleware(apiID int, apiHash, phone string, m
 }
 
 // CreateClientWithMiddlewareAndUpdates 创建带中间件和Updates处理器的Telegram客户端
-func (m *Manager) CreateClientWithMiddlewareAndUpdates(apiID int, apiHash, phone string, updateHandler telegram.UpdateHandler, middlewares ...telegram.Middleware) *telegram.Client {
+func (m *Manager) CreateClientWithMiddlewareAndUpdates(
+	apiID int,
+	apiHash string,
+	phone string,
+	updateHandler telegram.UpdateHandler,
+	middlewares ...telegram.Middleware,
+) *telegram.Client {
 	storage := m.GetSessionStorage(phone)
 	if storage == nil {
 		m.logger.Error("无法创建会话存储")

@@ -16,6 +16,8 @@ const (
 	LevelInfo  = "info"
 	LevelWarn  = "warn"
 	LevelError = "error"
+	// ExitCodeFatal is the exit code for fatal errors
+	ExitCodeFatal = 1
 )
 
 // LogLevel 日志级别
@@ -97,5 +99,5 @@ func (l *Logger) Error(msg string, args ...interface{}) {
 // Fatal 致命错误日志
 func (l *Logger) Fatal(msg string, args ...interface{}) {
 	fmt.Println(l.formatMessage("FATAL", fmt.Sprintf(msg, args...)))
-	os.Exit(1)
+	os.Exit(ExitCodeFatal)
 }
