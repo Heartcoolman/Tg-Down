@@ -12,6 +12,12 @@ import (
 const (
 	// TestFilePermission is the permission mode for creating test files
 	TestFilePermission = 0600
+	// TestAPIID is the test API ID
+	TestAPIID = 12345
+	// TestAPIHash is the test API hash
+	TestAPIHash = "test_hash"
+	// TestPhone is the test phone number
+	TestPhone = "+1234567890"
 )
 
 func TestNew(t *testing.T) {
@@ -30,7 +36,7 @@ func TestGetSessionStorage(t *testing.T) {
 	tempDir := t.TempDir()
 	testLogger := logger.New("debug")
 	manager := New(tempDir, testLogger)
-	phone := "+1234567890"
+	phone := TestPhone
 
 	storage := manager.GetSessionStorage(phone)
 	if storage == nil {
@@ -48,7 +54,7 @@ func TestHasValidSession(t *testing.T) {
 	tempDir := t.TempDir()
 	testLogger := logger.New("debug")
 	manager := New(tempDir, testLogger)
-	phone := "+1234567890"
+	phone := TestPhone
 
 	// 初始状态应该不存在
 	if manager.HasValidSession(phone) {
@@ -97,7 +103,7 @@ func TestClearSession(t *testing.T) {
 	tempDir := t.TempDir()
 	testLogger := logger.New("debug")
 	manager := New(tempDir, testLogger)
-	phone := "+1234567890"
+	phone := TestPhone
 
 	// 创建一个会话文件
 	sessionPath := filepath.Join(tempDir, "session_+1234567890.json")
@@ -129,7 +135,7 @@ func TestCreateClientWithSession(t *testing.T) {
 	testLogger := logger.New("debug")
 	manager := New(tempDir, testLogger)
 
-	client := manager.CreateClientWithSession(12345, "test_hash", "+1234567890")
+	client := manager.CreateClientWithSession(TestAPIID, TestAPIHash, TestPhone)
 	if client == nil {
 		t.Error("Expected non-nil client")
 	}

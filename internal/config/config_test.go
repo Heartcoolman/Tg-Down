@@ -5,15 +5,22 @@ import (
 	"testing"
 )
 
+// 测试常量
+const (
+	TestAPIID = 12345
+	TestAPIHash = "test_hash"
+	TestPhone = "+1234567890"
+)
+
 func TestLoadConfig(t *testing.T) {
 	// 设置测试环境变量
 	if err := os.Setenv("API_ID", "12345"); err != nil {
 		t.Fatalf("Failed to set API_ID: %v", err)
 	}
-	if err := os.Setenv("API_HASH", "test_hash"); err != nil {
+	if err := os.Setenv("API_HASH", TestAPIHash); err != nil {
 		t.Fatalf("Failed to set API_HASH: %v", err)
 	}
-	if err := os.Setenv("PHONE", "+1234567890"); err != nil {
+	if err := os.Setenv("PHONE", TestPhone); err != nil {
 		t.Fatalf("Failed to set PHONE: %v", err)
 	}
 	defer func() {
@@ -33,14 +40,14 @@ func TestLoadConfig(t *testing.T) {
 		t.Errorf("Unexpected error: %v", err)
 	}
 
-	if config.API.ID != 12345 {
-		t.Errorf("Expected API ID 12345, got %d", config.API.ID)
+	if config.API.ID != TestAPIID {
+		t.Errorf("Expected API ID %d, got %d", TestAPIID, config.API.ID)
 	}
-	if config.API.Hash != "test_hash" {
-		t.Errorf("Expected API Hash 'test_hash', got %s", config.API.Hash)
+	if config.API.Hash != TestAPIHash {
+		t.Errorf("Expected API Hash '%s', got %s", TestAPIHash, config.API.Hash)
 	}
-	if config.API.Phone != "+1234567890" {
-		t.Errorf("Expected Phone '+1234567890', got %s", config.API.Phone)
+	if config.API.Phone != TestPhone {
+		t.Errorf("Expected Phone '%s', got %s", TestPhone, config.API.Phone)
 	}
 }
 
@@ -48,10 +55,10 @@ func TestLoadConfigWithDefaults(t *testing.T) {
 	if err := os.Setenv("API_ID", "12345"); err != nil {
 		t.Fatalf("Failed to set API_ID: %v", err)
 	}
-	if err := os.Setenv("API_HASH", "test_hash"); err != nil {
+	if err := os.Setenv("API_HASH", TestAPIHash); err != nil {
 		t.Fatalf("Failed to set API_HASH: %v", err)
 	}
-	if err := os.Setenv("PHONE", "+1234567890"); err != nil {
+	if err := os.Setenv("PHONE", TestPhone); err != nil {
 		t.Fatalf("Failed to set PHONE: %v", err)
 	}
 	defer func() {
@@ -72,20 +79,20 @@ func TestLoadConfigWithDefaults(t *testing.T) {
 	}
 
 	// 检查默认值
-	if config.Download.Path != "./downloads" {
-		t.Errorf("Expected default download path './downloads', got %s", config.Download.Path)
+	if config.Download.Path != DefaultDownloadPath {
+		t.Errorf("Expected default download path '%s', got %s", DefaultDownloadPath, config.Download.Path)
 	}
-	if config.Download.MaxConcurrent != 5 {
-		t.Errorf("Expected default max concurrent 5, got %d", config.Download.MaxConcurrent)
+	if config.Download.MaxConcurrent != DefaultMaxConcurrent {
+		t.Errorf("Expected default max concurrent %d, got %d", DefaultMaxConcurrent, config.Download.MaxConcurrent)
 	}
-	if config.Download.BatchSize != 100 {
-		t.Errorf("Expected default batch size 100, got %d", config.Download.BatchSize)
+	if config.Download.BatchSize != DefaultBatchSize {
+		t.Errorf("Expected default batch size %d, got %d", DefaultBatchSize, config.Download.BatchSize)
 	}
-	if config.Log.Level != "info" {
-		t.Errorf("Expected default log level 'info', got %s", config.Log.Level)
+	if config.Log.Level != DefaultLogLevel {
+		t.Errorf("Expected default log level '%s', got %s", DefaultLogLevel, config.Log.Level)
 	}
-	if config.Session.Dir != "./sessions" {
-		t.Errorf("Expected default session dir './sessions', got %s", config.Session.Dir)
+	if config.Session.Dir != DefaultSessionDir {
+		t.Errorf("Expected default session dir '%s', got %s", DefaultSessionDir, config.Session.Dir)
 	}
 }
 
@@ -110,20 +117,20 @@ func TestLoadConfigMissingRequired(t *testing.T) {
 func TestSaveConfig(t *testing.T) {
 	config := &Config{
 		API: APIConfig{
-			ID:    12345,
-			Hash:  "test_hash",
-			Phone: "+1234567890",
+			ID:    TestAPIID,
+			Hash:  TestAPIHash,
+			Phone: TestPhone,
 		},
 		Download: DownloadConfig{
-			Path:          "./downloads",
-			MaxConcurrent: 5,
-			BatchSize:     100,
+			Path:          DefaultDownloadPath,
+			MaxConcurrent: DefaultMaxConcurrent,
+			BatchSize:     DefaultBatchSize,
 		},
 		Log: LogConfig{
-			Level: "info",
+			Level: DefaultLogLevel,
 		},
 		Session: SessionConfig{
-			Dir: "./sessions",
+			Dir: DefaultSessionDir,
 		},
 	}
 

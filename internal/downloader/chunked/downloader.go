@@ -20,6 +20,18 @@ const (
 	DefaultMaxWorkers = 4
 	// ProgressUpdateInterval is how often to update progress
 	ProgressUpdateInterval = time.Second
+	// DirectoryPermission is the permission for creating directories
+	DirectoryPermission = 0750
+	// ChunkChannelMultiplier is the multiplier for chunk channel buffer size
+	ChunkChannelMultiplier = 2
+	// MaxRenameRetries is the maximum number of rename retries
+	MaxRenameRetries = 5
+	// RenameSleepDuration is the sleep duration between rename retries
+	RenameSleepDuration = 500 * time.Millisecond
+	// MaxDownloadRetries is the maximum number of download retries per chunk
+	MaxDownloadRetries = 3
+	// RetryDelayBase is the base delay for retry calculations
+	RetryDelayBase = time.Second
 )
 
 // DownloadFunc represents a function that downloads a chunk of data
@@ -76,7 +88,7 @@ func (cd *ChunkDownloader) DownloadToFile(
 	cd.logger.Info("Starting chunked download: %s (size: %d bytes)", filePath, size)
 
 	// Create directory if it doesn't exist
-	if err := os.MkdirAll(filepath.Dir(filePath), 0750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(filePath), DirectoryPermission); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -106,7 +118,7 @@ func (cd *ChunkDownloader) DownloadToFile(
 	// Start progress reporting
 	progressCtx, progressCancel := context.WithCancel(ctx)
 	defer progressCancel()
-	
+
 	go func() {
 		for {
 			select {
@@ -122,7 +134,7 @@ func (cd *ChunkDownloader) DownloadToFile(
 	}()
 
 	// Create channels for work distribution
-	chunkChan := make(chan chunkJob, cd.maxWorkers*2)
+	chunkChan := make(chan chunkJob, cd.maxWorkers*ChunkChannelMultiplier)
 	errorChan := make(chan error, cd.maxWorkers)
 	var wg sync.WaitGroup
 
@@ -181,13 +193,13 @@ func (cd *ChunkDownloader) DownloadToFile(
 		return fmt.Errorf("临时文件不存在: %s", tempPath)
 	}
 	var renameErr error
-	for retry := 0; retry < 5; retry++ {
+	for retry := 0; retry < MaxRenameRetries; retry++ {
 		renameErr = os.Rename(tempPath, filePath)
 		if renameErr == nil {
 			return nil
 		}
 		cd.logger.Warn("重命名失败 (尝试 %d): %v", retry+1, renameErr)
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(RenameSleepDuration)
 	}
 	if remErr := os.Remove(tempPath); remErr != nil {
 		cd.logger.Error("Failed to remove temp file: %v", remErr)
@@ -228,13 +240,13 @@ func (cd *ChunkDownloader) worker(
 		// Download chunk with retry
 		var data []byte
 		var err error
-		for retry := 0; retry < 3; retry++ {
+		for retry := 0; retry < MaxDownloadRetries; retry++ {
 			data, err = downloadFunc(job.offset, job.size)
 			if err == nil {
 				break
 			}
 			cd.logger.Warn("Worker %d retry %d for chunk at offset %d: %v", workerID, retry+1, job.offset, err)
-			time.Sleep(time.Duration(retry+1) * time.Second)
+			time.Sleep(time.Duration(retry+1) * RetryDelayBase)
 		}
 
 		if err != nil {
@@ -278,7 +290,7 @@ func (cd *ChunkDownloader) DownloadToWriter(
 	// Start progress reporting
 	progressCtx, progressCancel := context.WithCancel(ctx)
 	defer progressCancel()
-	
+
 	go func() {
 		for {
 			select {

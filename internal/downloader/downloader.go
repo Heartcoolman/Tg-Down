@@ -21,6 +21,8 @@ const (
 	DirectoryPermission = 0750
 	// DownloadDelayMs is the simulated download delay in milliseconds
 	DownloadDelayMs = 100
+	// MegabyteDivisor is the divisor for converting bytes to megabytes
+	MegabyteDivisor = 1024 * 1024
 )
 
 // MediaInfo 媒体文件信息
@@ -330,6 +332,6 @@ func (d *Downloader) PrintStats() {
 	d.logger.Info("  已下载: %d", stats.Downloaded)
 	d.logger.Info("  失败: %d", stats.Failed)
 	d.logger.Info("  跳过: %d", stats.Skipped)
-	d.logger.Info("  总大小: %.2f MB", float64(stats.TotalSize)/(1024*1024))
-	d.logger.Info("  已下载大小: %.2f MB", float64(stats.DownloadedSize)/(1024*1024))
+	d.logger.Info("  总大小: %.2f MB", float64(stats.TotalSize)/MegabyteDivisor)
+	d.logger.Info("  已下载大小: %.2f MB", float64(stats.DownloadedSize)/MegabyteDivisor)
 }

@@ -31,9 +31,9 @@ func main() {
 	fmt.Printf("  - 分块大小: %d KB\n", cfg.Download.ChunkSize)
 	fmt.Printf("  - 最大工作线程: %d\n", cfg.Download.MaxWorkers)
 	fmt.Printf("  - 使用分块下载: %v\n", cfg.Download.UseChunked)
-	fmt.Printf("  - 重试配置: 最大%d次, 基础延迟%ds, 最大延迟%ds\n", 
+	fmt.Printf("  - 重试配置: 最大%d次, 基础延迟%ds, 最大延迟%ds\n",
 		cfg.Retry.MaxRetries, cfg.Retry.BaseDelay, cfg.Retry.MaxDelay)
-	fmt.Printf("  - 速率限制: %.1f req/s, 突发%d\n", 
+	fmt.Printf("  - 速率限制: %.1f req/s, 突发%d\n",
 		cfg.RateLimit.RequestsPerSecond, cfg.RateLimit.BurstSize)
 
 	// 2. 测试日志器
@@ -43,7 +43,7 @@ func main() {
 
 	// 3. 测试重试机制
 	fmt.Println("\n3. 测试重试机制...")
-	
+
 	// 创建重试配置
 	retryConfig := &retry.Config{
 		MaxRetries:   cfg.Retry.MaxRetries,
@@ -52,7 +52,7 @@ func main() {
 		JitterFactor: 0.1,
 		ShouldRetry:  retry.DefaultShouldRetry,
 	}
-	
+
 	retrier := retry.New(retryConfig, logger)
 	fmt.Println("✓ 重试器创建成功")
 
@@ -87,7 +87,7 @@ func main() {
 	limiter := ratelimit.New(rate.Limit(cfg.RateLimit.RequestsPerSecond), cfg.RateLimit.BurstSize, logger)
 	fmt.Println("✓ 速率限制器创建成功")
 	_ = limiter // 避免未使用警告)
-	
+
 	// 测试速率限制功能
 	fmt.Println("  测试速率限制功能...")
 	start := time.Now()
@@ -107,12 +107,12 @@ func main() {
 
 	// 6. 测试分块下载器
 	fmt.Println("\n6. 测试分块下载器...")
-	
+
 	// 测试不同配置的分块下载器
 	fmt.Println("  测试默认配置...")
 	downloader1 := chunked.New(logger)
 	fmt.Printf("  ✓ 默认分块下载器创建成功\n")
-	
+
 	fmt.Println("  测试自定义配置...")
 	downloader2 := chunked.New(logger).
 		WithChunkSize(cfg.Download.ChunkSize * 1024). // 转换为字节
@@ -126,17 +126,17 @@ func main() {
 	fmt.Printf("  ✓ 自定义分块下载器创建成功\n")
 	fmt.Printf("    - 块大小: %d KB\n", cfg.Download.ChunkSize)
 	fmt.Printf("    - 最大工作线程: %d\n", cfg.Download.MaxWorkers)
-	
+
 	// 避免未使用警告
 	_ = downloader1
 	_ = downloader2
 
 	// 7. 测试组件集成
 	fmt.Println("\n7. 测试组件集成...")
-	
+
 	// 创建一个集成了所有优化功能的模拟下载任务
 	fmt.Println("  模拟集成下载任务...")
-	
+
 	integrationRetrier := retry.New(&retry.Config{
 		MaxRetries:   2,
 		BaseDelay:    100 * time.Millisecond,
@@ -144,29 +144,29 @@ func main() {
 		JitterFactor: 0.1,
 		ShouldRetry: func(err error) bool {
 			// 自定义重试逻辑：模拟网络错误
-			return strings.Contains(err.Error(), "network") || 
-				   strings.Contains(err.Error(), "timeout")
+			return strings.Contains(err.Error(), "network") ||
+				strings.Contains(err.Error(), "timeout")
 		},
 	}, logger)
-	
+
 	integrationLimiter := ratelimit.New(rate.Limit(5.0), 3, logger)
 	_ = integrationLimiter // 避免未使用警告
-	
+
 	// 模拟一个需要重试和速率限制的任务
 	taskAttempts := 0
 	err = integrationRetrier.Do(ctx, func() error {
 		// 模拟速率限制检查（实际使用中会通过中间件处理）
 		time.Sleep(50 * time.Millisecond) // 模拟速率限制延迟
-		
+
 		taskAttempts++
 		if taskAttempts < 2 {
 			return fmt.Errorf("network timeout during download")
 		}
-		
+
 		fmt.Printf("  ✓ 集成任务成功完成 (尝试次数: %d)\n", taskAttempts)
 		return nil
 	})
-	
+
 	if err != nil {
 		fmt.Printf("  ✗ 集成测试失败: %v\n", err)
 	} else {

@@ -28,20 +28,53 @@ import (
 	"tg-down/internal/session"
 )
 
+const (
+	// API相关常量
+	DefaultDialogLimit  = 100
+	DefaultHistoryLimit = 20
+	SingleMessageLimit  = 1
+
+	// 文件下载相关常量
+	ChunkSize           = 512 * 1024 // 512KB
+	MaxWorkers          = 4
+	MaxRetries          = 3
+	MaxRenameRetries    = 5
+	RenameSleepDuration = 500 * time.Millisecond
+
+	// 对齐和限制常量
+	APIAlignment   = 1024       // 1KB - Telegram API要求
+	ChunkAlignment = 4096       // 4KB对齐
+	MaxAPILimit    = 512 * 1024 // 512KB - Telegram API最大限制
+
+	// 进度显示常量
+	ProgressInterval      = 1024 * 1024 // 每1MB显示进度
+	ProgressChunkInterval = 10          // 每10个块显示进度
+
+	// 延迟和重试常量
+	BaseRetryDelay      = 1 * time.Second
+	FloodWaitMultiplier = 3
+
+	// 消息相关常量
+	MessagePreviewLength = 50
+
+	// 时间戳相关常量
+	UnixTimeBase = 0
+)
+
 // Client Telegram客户端包装器
 type Client struct {
-	Client          *telegram.Client
-	API             *tg.Client
-	config          *config.Config
-	logger          *logger.Logger
-	downloader      *downloader.Downloader
+	Client            *telegram.Client
+	API               *tg.Client
+	config            *config.Config
+	logger            *logger.Logger
+	downloader        *downloader.Downloader
 	chunkedDownloader *chunked.ChunkDownloader
-	sessionMgr      *session.Manager
-	targetChatID    int64 // 目标聊天ID，用于实时监控
-	lastMessageID   int   // 最后处理的消息ID
-	floodWaiter     *floodwait.Waiter
-	rateLimiter     *ratelimit.Limiter
-	retrier         *retry.Retrier
+	sessionMgr        *session.Manager
+	targetChatID      int64 // 目标聊天ID，用于实时监控
+	lastMessageID     int   // 最后处理的消息ID
+	floodWaiter       *floodwait.Waiter
+	rateLimiter       *ratelimit.Limiter
+	retrier           *retry.Retrier
 }
 
 // New 创建新的Telegram客户端
@@ -291,7 +324,7 @@ func (c *Client) ClearSession() error {
 // GetChats 获取聊天列表
 func (c *Client) GetChats(ctx context.Context) ([]ChatInfo, error) {
 	dialogs, err := c.API.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
-		Limit: 100,
+		Limit: DefaultDialogLimit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("获取对话列表失败: %w", err)
@@ -355,12 +388,12 @@ func (c *Client) GetMediaMessages(ctx context.Context, chatID int64, limit, offs
 	history, err := c.API.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
 		Peer:       inputPeer,
 		OffsetID:   offsetID,
-		OffsetDate: 0,
-		AddOffset:  0,
+		OffsetDate: UnixTimeBase,
+		AddOffset:  UnixTimeBase,
 		Limit:      limit,
-		MaxID:      0,
-		MinID:      0,
-		Hash:       0,
+		MaxID:      UnixTimeBase,
+		MinID:      UnixTimeBase,
+		Hash:       UnixTimeBase,
 	})
 
 	if err != nil {
@@ -429,7 +462,7 @@ func (c *Client) extractPhotoInfo(media *tg.MessageMediaPhoto, message *tg.Messa
 		MediaType:     "photo",
 		FileName:      fmt.Sprintf("photo_%d.jpg", photo.ID),
 		ChatID:        chatID,
-		Date:          time.Unix(int64(message.Date), 0),
+		Date:          time.Unix(int64(message.Date), UnixTimeBase),
 		MimeType:      "image/jpeg",
 	}
 
@@ -520,7 +553,7 @@ func (c *Client) DownloadFile(ctx context.Context, media *downloader.MediaInfo, 
 		// 检查是否使用分块下载
 		if c.config.Download.UseChunked && media.FileSize > 1024*1024 { // 大于1MB使用分块下载
 			c.logger.Info("使用分块下载器下载文件: %s (大小: %d bytes)", media.FileName, media.FileSize)
-			
+
 			// 创建下载函数
 			downloadFunc := func(offset int64, limit int) ([]byte, error) {
 				// 调用Telegram API
@@ -665,16 +698,10 @@ func (c *Client) downloadFileChunksConcurrent(
 	fileSize int64,
 	tempPath string,
 ) error {
-	const (
-		chunkSize  = 512 * 1024 // 512KB
-		maxWorkers = 4          // 并发数
-		maxRetries = 3          // 重试次数
-	)
-
-	c.logger.Info("开始并发下载，文件大小: %d bytes, 块大小: %d KB, 并发数: %d", fileSize, chunkSize/1024, maxWorkers)
+	c.logger.Info("开始并发下载，文件大小: %d bytes, 块大小: %d KB, 并发数: %d", fileSize, ChunkSize/APIAlignment, MaxWorkers)
 
 	// 计算总块数
-	totalChunks := int((fileSize + int64(chunkSize) - 1) / int64(chunkSize))
+	totalChunks := int((fileSize + int64(ChunkSize) - 1) / int64(ChunkSize))
 
 	// 创建工作队列和结果通道
 	type chunkJob struct {
@@ -693,7 +720,7 @@ func (c *Client) downloadFileChunksConcurrent(
 	results := make(chan chunkResult, totalChunks)
 
 	// 启动工作协程
-	for i := 0; i < maxWorkers; i++ {
+	for i := 0; i < MaxWorkers; i++ {
 		go func(workerID int) {
 			for job := range jobs {
 				c.logger.Debug("Worker %d 开始下载块 %d (offset: %d, size: %d)", workerID, job.index, job.offset, job.size)
@@ -702,9 +729,9 @@ func (c *Client) downloadFileChunksConcurrent(
 				var err error
 
 				// 重试机制
-				for retry := 0; retry < maxRetries; retry++ {
+				for retry := 0; retry < MaxRetries; retry++ {
 					if retry > 0 {
-						delay := time.Duration(retry) * time.Second
+						delay := time.Duration(retry) * BaseRetryDelay
 						c.logger.Debug("Worker %d 重试块 %d (第%d次)", workerID, job.index, retry)
 						time.Sleep(delay)
 					}
@@ -733,7 +760,7 @@ func (c *Client) downloadFileChunksConcurrent(
 						strings.Contains(errStr, "420") {
 						c.logger.Warn("Worker %d 遇到API限制: %v", workerID, downloadErr)
 						if strings.Contains(errStr, "FLOOD_WAIT") {
-							time.Sleep(time.Duration(retry+1) * 3 * time.Second)
+							time.Sleep(time.Duration(retry+1) * FloodWaitMultiplier * BaseRetryDelay)
 						}
 						err = downloadErr
 						continue
@@ -754,26 +781,25 @@ func (c *Client) downloadFileChunksConcurrent(
 	// 发送下载任务
 	go func() {
 		defer close(jobs)
-		const alignment = 4096 // 4KB对齐
-		
+
 		for i := 0; i < totalChunks; i++ {
-			offset := int64(i) * int64(chunkSize)
-			
+			offset := int64(i) * int64(ChunkSize)
+
 			// 确保偏移量是1KB对齐的
-			if offset%alignment != 0 {
-				offset = (offset / alignment) * alignment
+			if offset%ChunkAlignment != 0 {
+				offset = (offset / ChunkAlignment) * ChunkAlignment
 			}
-			
-			size := chunkSize
+
+			size := ChunkSize
 			if offset+int64(size) > fileSize {
 				size = int(fileSize - offset)
 			}
-			
+
 			// 确保块大小也是4KB对齐的
-			if size%alignment != 0 {
-				size = (size / alignment) * alignment
+			if size%ChunkAlignment != 0 {
+				size = (size / ChunkAlignment) * ChunkAlignment
 				if size == 0 {
-					size = alignment // 最小4KB
+					size = ChunkAlignment // 最小4KB
 				}
 			}
 
@@ -802,7 +828,7 @@ func (c *Client) downloadFileChunksConcurrent(
 
 		// 显示进度
 		progress := float64(completedChunks) / float64(totalChunks) * 100
-		if completedChunks%10 == 0 || completedChunks == totalChunks {
+		if completedChunks%ProgressChunkInterval == 0 || completedChunks == totalChunks {
 			c.logger.Info("下载进度: %.1f%% (%d/%d 块)", progress, completedChunks, totalChunks)
 		}
 	}
@@ -833,23 +859,17 @@ func (c *Client) downloadFileChunks(
 	fileSize int64,
 	tempPath string,
 ) error {
-	const (
-		chunkSize  = 512 * 1024      // 512KB
-		alignment  = 1024            // 1KB - Telegram API要求
-		maxRetries = 3               // 减少重试次数，依赖重试器
-		baseDelay  = 1 * time.Second // 减少基础延迟
-	)
 	var offset int64
 
-	c.logger.Info("开始分块下载，文件大小: %d bytes, 块大小: %d KB", fileSize, chunkSize/1024)
+	c.logger.Info("开始分块下载，文件大小: %d bytes, 块大小: %d KB", fileSize, ChunkSize/APIAlignment)
 
 	for offset < fileSize {
 		// 确保偏移量是4KB对齐的
-		if offset%alignment != 0 {
-			offset = (offset / alignment) * alignment
+		if offset%APIAlignment != 0 {
+			offset = (offset / APIAlignment) * APIAlignment
 		}
-		
-		limit := c.calculateChunkLimit(chunkSize, fileSize-offset)
+
+		limit := c.calculateChunkLimit(ChunkSize, fileSize-offset)
 
 		// 调用Telegram API获取文件块
 		fileData, err := c.API.UploadGetFile(ctx, &tg.UploadGetFileRequest{
@@ -871,13 +891,13 @@ func (c *Client) downloadFileChunks(
 
 		// 确保下一个偏移量也是1KB对齐的
 		nextOffset := offset + int64(bytesWritten)
-		if nextOffset%alignment != 0 {
-			nextOffset = ((nextOffset / alignment) + 1) * alignment
+		if nextOffset%APIAlignment != 0 {
+			nextOffset = ((nextOffset / APIAlignment) + 1) * APIAlignment
 		}
 		offset = nextOffset
 
 		// 减少进度日志频率，避免影响性能
-		if offset%(1024*1024) == 0 || offset >= fileSize { // 每1MB或完成时显示
+		if offset%ProgressInterval == 0 || offset >= fileSize { // 每1MB或完成时显示
 			progress := float64(offset) / float64(fileSize) * 100
 			c.logger.Info("下载进度: %.1f%% (%d/%d bytes)", progress, offset, fileSize)
 		}
@@ -892,24 +912,21 @@ func (c *Client) downloadFileChunks(
 
 // calculateChunkLimit 计算块大小限制
 func (c *Client) calculateChunkLimit(chunkSize int, remaining int64) int {
-	const alignment = 1024 // 1KB - Telegram API要求offset和limit都必须是1KB的倍数
-	
 	limit := chunkSize
 	if remaining < int64(chunkSize) {
 		limit = int(remaining)
 	}
 
 	// Telegram API限制：最大512KB，符合upload.getFile的limit参数限制
-	maxLimit := 512 * 1024 // 512KB - Telegram API最大限制
-	if limit > maxLimit {
-		limit = maxLimit
+	if limit > MaxAPILimit {
+		limit = MaxAPILimit
 	}
 
 	// 确保是1KB的倍数，符合Telegram API要求
-	if limit%alignment != 0 {
-		limit = (limit / alignment) * alignment
+	if limit%APIAlignment != 0 {
+		limit = (limit / APIAlignment) * APIAlignment
 		if limit == 0 {
-			limit = alignment // 最小1KB
+			limit = APIAlignment // 最小1KB
 		}
 	}
 
@@ -943,13 +960,13 @@ func (c *Client) finalizeTempFile(tempPath, filePath string) error {
 		return fmt.Errorf("临时文件不存在: %s", tempPath)
 	}
 	var renameErr error
-	for retry := 0; retry < 5; retry++ {
+	for retry := 0; retry < MaxRenameRetries; retry++ {
 		renameErr = os.Rename(tempPath, filePath)
 		if renameErr == nil {
 			return nil
 		}
 		c.logger.Warn("重命名失败 (尝试 %d): %v", retry+1, renameErr)
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(RenameSleepDuration)
 	}
 	c.cleanupTempFile(tempPath)
 	return fmt.Errorf("重命名文件失败 after retries: %w", renameErr)

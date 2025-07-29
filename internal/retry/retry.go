@@ -25,12 +25,12 @@ const (
 
 // Config holds retry configuration
 type Config struct {
-	MaxRetries    int
-	BaseDelay     time.Duration
-	MaxDelay      time.Duration
-	JitterFactor  float64
-	ShouldRetry   func(error) bool
-	OnRetry       func(attempt int, err error, delay time.Duration)
+	MaxRetries   int
+	BaseDelay    time.Duration
+	MaxDelay     time.Duration
+	JitterFactor float64
+	ShouldRetry  func(error) bool
+	OnRetry      func(attempt int, err error, delay time.Duration)
 }
 
 // DefaultConfig returns a default retry configuration
@@ -55,22 +55,22 @@ func DefaultShouldRetry(err error) bool {
 
 	// Add specific error types that should be retried
 	errStr := err.Error()
-	
+
 	// Network-related errors
-	if contains(errStr, "connection") || 
-	   contains(errStr, "timeout") || 
-	   contains(errStr, "network") ||
-	   contains(errStr, "temporary") {
+	if contains(errStr, "connection") ||
+		contains(errStr, "timeout") ||
+		contains(errStr, "network") ||
+		contains(errStr, "temporary") {
 		return true
 	}
 
 	// Telegram-specific errors that should be retried
 	if contains(errStr, "INTERNAL_SERVER_ERROR") ||
-	   contains(errStr, "NETWORK_MIGRATE") ||
-	   contains(errStr, "PHONE_MIGRATE") ||
-	   contains(errStr, "FILE_MIGRATE") ||
-	   contains(errStr, "USER_MIGRATE") ||
-	   contains(errStr, "STATS_MIGRATE") {
+		contains(errStr, "NETWORK_MIGRATE") ||
+		contains(errStr, "PHONE_MIGRATE") ||
+		contains(errStr, "FILE_MIGRATE") ||
+		contains(errStr, "USER_MIGRATE") ||
+		contains(errStr, "STATS_MIGRATE") {
 		return true
 	}
 
@@ -79,10 +79,10 @@ func DefaultShouldRetry(err error) bool {
 
 // contains checks if a string contains a substring (case-insensitive)
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && 
-		   (s == substr || 
-		    (len(s) > len(substr) && 
-		     anySubstring(s, substr)))
+	return len(s) >= len(substr) &&
+		(s == substr ||
+			(len(s) > len(substr) &&
+				anySubstring(s, substr)))
 }
 
 func anySubstring(s, substr string) bool {
@@ -152,7 +152,7 @@ func (r *Retrier) Do(ctx context.Context, fn func() error) error {
 
 		// Calculate delay with exponential backoff and jitter
 		delay := r.calculateDelay(attempt)
-		
+
 		// Call retry callback
 		if r.config.OnRetry != nil {
 			r.config.OnRetry(attempt+1, err, delay)
@@ -184,23 +184,23 @@ func (r *Retrier) DoWithResult(ctx context.Context, fn func() (interface{}, erro
 func (r *Retrier) calculateDelay(attempt int) time.Duration {
 	// Exponential backoff: baseDelay * 2^attempt
 	delay := float64(r.config.BaseDelay) * math.Pow(2, float64(attempt))
-	
+
 	// Apply maximum delay limit
 	if delay > float64(r.config.MaxDelay) {
 		delay = float64(r.config.MaxDelay)
 	}
-	
+
 	// Add jitter to avoid thundering herd
 	if r.config.JitterFactor > 0 {
 		jitter := delay * r.config.JitterFactor * (rand.Float64()*2 - 1) // Random between -jitterFactor and +jitterFactor
 		delay += jitter
-		
+
 		// Ensure delay is not negative
 		if delay < 0 {
 			delay = float64(r.config.BaseDelay)
 		}
 	}
-	
+
 	return time.Duration(delay)
 }
 

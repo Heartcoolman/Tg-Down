@@ -18,6 +18,25 @@ const (
 	DefaultSessionDir   = "./sessions"
 	// FilePermission is the permission mode for creating config files
 	FilePermission = 0600
+
+	// 默认下载配置
+	DefaultMaxConcurrent = 5
+	DefaultBatchSize     = 100
+	DefaultChunkSize     = 512 // 512KB
+	DefaultMaxWorkers    = 4
+
+	// 默认重试配置
+	DefaultMaxRetries = 3
+	DefaultBaseDelay  = 1  // 1秒
+	DefaultMaxDelay   = 30 // 30秒
+
+	// 默认速率限制配置
+	DefaultRequestsPerSecond = 1.0 // 1 request per second
+	DefaultBurstSize         = 2
+
+	// 进制转换基数
+	DecimalBase  = 10
+	FloatBitSize = 64
 )
 
 // Config 应用配置结构
@@ -43,9 +62,9 @@ type DownloadConfig struct {
 	Path          string `yaml:"path"`
 	MaxConcurrent int    `yaml:"max_concurrent"`
 	BatchSize     int    `yaml:"batch_size"`
-	ChunkSize     int    `yaml:"chunk_size"`     // 分块大小 (KB)
-	MaxWorkers    int    `yaml:"max_workers"`    // 并行下载工作线程数
-	UseChunked    bool   `yaml:"use_chunked"`    // 是否启用分块下载
+	ChunkSize     int    `yaml:"chunk_size"`  // 分块大小 (KB)
+	MaxWorkers    int    `yaml:"max_workers"` // 并行下载工作线程数
+	UseChunked    bool   `yaml:"use_chunked"` // 是否启用分块下载
 }
 
 // RetryConfig 重试配置
@@ -188,7 +207,7 @@ func loadDownloadConfig(config *Config) {
 // loadChatConfig 加载聊天配置
 func loadChatConfig(config *Config) {
 	if targetChatID := os.Getenv("TARGET_CHAT_ID"); targetChatID != "" {
-		if chatID, err := strconv.ParseInt(targetChatID, 10, 64); err == nil {
+		if chatID, err := strconv.ParseInt(targetChatID, DecimalBase, FloatBitSize); err == nil {
 			config.Chat.TargetID = chatID
 		}
 	}
@@ -232,7 +251,7 @@ func loadRetryConfig(config *Config) {
 // loadRateLimitConfig 加载速率限制配置
 func loadRateLimitConfig(config *Config) {
 	if requestsPerSecond := os.Getenv("REQUESTS_PER_SECOND"); requestsPerSecond != "" {
-		if rps, err := strconv.ParseFloat(requestsPerSecond, 64); err == nil {
+		if rps, err := strconv.ParseFloat(requestsPerSecond, FloatBitSize); err == nil {
 			config.RateLimit.RequestsPerSecond = rps
 		}
 	}
@@ -250,34 +269,34 @@ func setDefaults(config *Config) {
 		config.Download.Path = DefaultDownloadPath
 	}
 	if config.Download.MaxConcurrent == 0 {
-		config.Download.MaxConcurrent = 5
+		config.Download.MaxConcurrent = DefaultMaxConcurrent
 	}
 	if config.Download.BatchSize == 0 {
-		config.Download.BatchSize = 100
+		config.Download.BatchSize = DefaultBatchSize
 	}
 	if config.Download.ChunkSize == 0 {
-		config.Download.ChunkSize = 512 // 512KB
+		config.Download.ChunkSize = DefaultChunkSize
 	}
 	if config.Download.MaxWorkers == 0 {
-		config.Download.MaxWorkers = 4
+		config.Download.MaxWorkers = DefaultMaxWorkers
 	}
 	// UseChunked 默认为 false，让用户显式启用
 
 	if config.Retry.MaxRetries == 0 {
-		config.Retry.MaxRetries = 3
+		config.Retry.MaxRetries = DefaultMaxRetries
 	}
 	if config.Retry.BaseDelay == 0 {
-		config.Retry.BaseDelay = 1 // 1秒
+		config.Retry.BaseDelay = DefaultBaseDelay
 	}
 	if config.Retry.MaxDelay == 0 {
-		config.Retry.MaxDelay = 30 // 30秒
+		config.Retry.MaxDelay = DefaultMaxDelay
 	}
 
 	if config.RateLimit.RequestsPerSecond == 0 {
-		config.RateLimit.RequestsPerSecond = 1.0 // 1 request per second
+		config.RateLimit.RequestsPerSecond = DefaultRequestsPerSecond
 	}
 	if config.RateLimit.BurstSize == 0 {
-		config.RateLimit.BurstSize = 2
+		config.RateLimit.BurstSize = DefaultBurstSize
 	}
 
 	if config.Log.Level == "" {
