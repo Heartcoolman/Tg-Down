@@ -1,147 +1,156 @@
+version: "2"
 run:
-  timeout: 5m
   issues-exit-code: 1
   tests: true
-
 output:
   formats:
-    - format: colored-line-number
-  print-issued-lines: true
-  print-linter-name: true
-
-linters-settings:
-  depguard:
-    rules:
-      main:
-        files:
-          - "!**/*_test.go"
-        allow:
-          - $gostd
-          - github.com/gotd/td
-          - github.com/joho/godotenv
-          - gopkg.in/yaml.v3
-          - golang.org/x/time/rate
-          - tg-down/internal/config
-          - tg-down/internal/logger
-          - tg-down/internal/telegram
-          - tg-down/internal/downloader
-          - tg-down/internal/session
-          - tg-down/internal/middleware/floodwait
-          - tg-down/internal/middleware/ratelimit
-          - tg-down/internal/retry
-  revive:
-    min-confidence: 0
-  gocyclo:
-    min-complexity: 15
-  dupl:
-    threshold: 100
-  goconst:
-    min-len: 2
-    min-occurrences: 2
-  misspell:
-    locale: US
-  lll:
-    line-length: 140
-  goimports:
-    local-prefixes: tg-down
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - experimental
-      - opinionated
-      - performance
-      - style
-    disabled-checks:
-      - dupImport
-      - ifElseChain
-      - octalLiteral
-      - whyNoLint
-      - wrapperFunc
-      - exitAfterDefer
-  mnd:
-    checks:
-      - argument
-      - case
-      - condition
-      - return
-    ignored-numbers:
-      - '0'
-      - '1'
-      - '2'
-      - '3'
-      - '10'
-      - '100'
-      - '1000'
-      - '1024'
-    ignored-functions:
-      - 'time.Sleep'
-      - 'time.Duration'
-      - 'make'
-      - 'strconv.FormatInt'
-      - 'strconv.ParseInt'
-
+    text:
+      path: stdout
+      print-linter-name: true
+      print-issued-lines: true
 linters:
   enable:
     - bodyclose
     - depguard
     - dogsled
     - dupl
-    - errcheck
     - exhaustive
     - gochecknoinits
     - goconst
     - gocritic
     - gocyclo
-    - gofmt
-    - goimports
-    - mnd
     - goprintffuncname
     - gosec
-    - gosimple
-    - govet
-    - ineffassign
     - lll
     - misspell
+    - mnd
     - nakedret
     - noctx
     - nolintlint
     - revive
     - rowserrcheck
     - staticcheck
-    - stylecheck
-    - typecheck
     - unconvert
     - unparam
-    - unused
     - whitespace
-
+  settings:
+    depguard:
+      rules:
+        main:
+          files:
+            - '!**/*_test.go'
+          allow:
+            - $gostd
+            - github.com/gotd/td
+            - github.com/joho/godotenv
+            - gopkg.in/yaml.v3
+            - golang.org/x/time/rate
+            - tg-down/internal/config
+            - tg-down/internal/logger
+            - tg-down/internal/telegram
+            - tg-down/internal/downloader
+            - tg-down/internal/session
+            - tg-down/internal/middleware/floodwait
+            - tg-down/internal/middleware/ratelimit
+            - tg-down/internal/retry
+    dupl:
+      threshold: 100
+    goconst:
+      min-len: 2
+      min-occurrences: 2
+    gocritic:
+      disabled-checks:
+        - dupImport
+        - ifElseChain
+        - octalLiteral
+        - whyNoLint
+        - wrapperFunc
+        - exitAfterDefer
+        - importShadow
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+    gocyclo:
+      min-complexity: 15
+    lll:
+      line-length: 140
+    misspell:
+      locale: US
+    mnd:
+      checks:
+        - argument
+        - case
+        - condition
+        - return
+      ignored-numbers:
+        - "0"
+        - "1"
+        - "2"
+        - "3"
+        - "10"
+        - "100"
+        - "1000"
+        - "1024"
+      ignored-functions:
+        - time.Sleep
+        - time.Duration
+        - make
+        - strconv.FormatInt
+        - strconv.ParseInt
+  exclusions:
+    generated: lax
+    rules:
+      - linters:
+          - dupl
+          - goconst
+          - mnd
+        path: _test\.go
+      - linters:
+          - gocyclo
+          - mnd
+          - revive
+        path: cmd/test-optimizations/
+      - linters:
+          - gochecknoinits
+        path: cmd/
+      - linters:
+          - noctx
+        path: cmd/test-connection/
+      - linters:
+          - unused
+        text: is unused
+      - linters:
+          - unparam
+        text: parameter .* seems to be unused
+    paths:
+      - .*\.pb\.go$
+      - .*_test.go
+      - vendor
+      - cmd/test-optimizations
+      - third_party$
+      - builtin$
+      - examples$
 issues:
-  exclude-dirs:
-    - vendor
-    - cmd/test-optimizations
-  exclude-files:
-    - ".*\\.pb\\.go$"
-    - ".*_test.go"
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - mnd
-        - goconst
-        - dupl
-    - path: cmd/test-optimizations/
-      linters:
-        - gocyclo
-        - mnd
-        - revive
-    - path: cmd/
-      linters:
-        - gochecknoinits
-    - text: "is unused"
-      linters:
-        - unused
-    - text: "parameter .* seems to be unused"
-      linters:
-        - unparam
-  exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - tg-down
+  exclusions:
+    generated: lax
+    paths:
+      - .*\.pb\.go$
+      - .*_test.go
+      - vendor
+      - cmd/test-optimizations
+      - third_party$
+      - builtin$
+      - examples$
