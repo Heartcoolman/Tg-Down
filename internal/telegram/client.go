@@ -40,10 +40,6 @@ const (
 
 	// ChunkSize is the default chunk size for file downloads
 	ChunkSize = 512 * 1024 // 512KB
-	// MaxWorkers is the maximum number of concurrent workers
-	MaxWorkers = 4
-	// MaxRetries is the maximum number of retry attempts
-	MaxRetries = 3
 	// MaxRenameRetries is the maximum number of file rename retry attempts
 	MaxRenameRetries = 5
 	// RenameSleepDuration is the sleep duration between rename retries
@@ -51,20 +47,11 @@ const (
 
 	// APIAlignment is the alignment requirement for Telegram API
 	APIAlignment = 1024 // 1KB - Telegram API要求
-	// ChunkAlignment is the chunk alignment for optimal performance
-	ChunkAlignment = 4096 // 4KB对齐
 	// MaxAPILimit is the maximum limit for Telegram API requests
 	MaxAPILimit = 512 * 1024 // 512KB - Telegram API最大限制
 
 	// ProgressInterval is the interval for progress reporting
 	ProgressInterval = 1024 * 1024 // 每1MB显示进度
-	// ProgressChunkInterval is the chunk interval for progress reporting
-	ProgressChunkInterval = 10 // 每10个块显示进度
-
-	// BaseRetryDelay is the default base delay for exponential backoff
-	BaseRetryDelay = 1 * time.Second
-	// FloodWaitMultiplier is the multiplier for flood wait delays
-	FloodWaitMultiplier = 3
 
 	// MessagePreviewLength is the maximum length for message preview text
 	MessagePreviewLength = 50
@@ -77,6 +64,10 @@ const (
 
 	// ShortSleepDuration is a short sleep duration for retry operations
 	ShortSleepDuration = 100 * time.Millisecond
+
+	// mediaTypePhoto and mediaTypeDocument are media type identifiers.
+	mediaTypePhoto    = "photo"
+	mediaTypeDocument = "document"
 )
 
 // Client Telegram客户端包装器
@@ -477,7 +468,7 @@ func (c *Client) extractPhotoInfo(media *tg.MessageMediaPhoto, message *tg.Messa
 		FileID:        photo.ID,
 		AccessHash:    photo.AccessHash,
 		FileReference: photo.FileReference,
-		MediaType:     "photo",
+		MediaType:     mediaTypePhoto,
 		FileName:      fmt.Sprintf("photo_%d.jpg", photo.ID),
 		ChatID:        chatID,
 		Date:          time.Unix(int64(message.Date), UnixTimeBase),
@@ -536,7 +527,7 @@ func (c *Client) extractDocumentInfo(media *tg.MessageMediaDocument, message *tg
 		FileID:        doc.ID,
 		AccessHash:    doc.AccessHash,
 		FileReference: doc.FileReference,
-		MediaType:     "document",
+		MediaType:     mediaTypeDocument,
 		FileName:      fileName,
 		FileSize:      doc.Size,
 		ThumbSize:     "",
@@ -690,223 +681,22 @@ func (c *Client) isSafePath(filePath string) bool {
 // buildFileLocation 根据媒体类型构建下载位置
 func (c *Client) buildFileLocation(media *downloader.MediaInfo) (tg.InputFileLocationClass, error) {
 	switch media.MediaType {
-	case "photo":
+	case mediaTypePhoto:
 		return &tg.InputPhotoFileLocation{
 			ID:            media.FileID,
 			AccessHash:    media.AccessHash,
 			FileReference: media.FileReference,
 			ThumbSize:     media.ThumbSize,
 		}, nil
-	case "document":
+	case mediaTypeDocument:
 		return &tg.InputDocumentFileLocation{
 			ID:            media.FileID,
 			AccessHash:    media.AccessHash,
 			FileReference: media.FileReference,
-			ThumbSize:     media.ThumbSize,
 		}, nil
 	default:
 		return nil, errors.New("unsupported media type")
 	}
-}
-
-// chunkJob 表示一个下载任务
-type chunkJob struct {
-	offset int64
-	size   int
-	index  int
-}
-
-// chunkResult 表示下载结果
-type chunkResult struct {
-	index int
-	data  []byte
-	err   error
-}
-
-// downloadFileChunksConcurrent 并发分块下载文件
-func (c *Client) downloadFileChunksConcurrent(
-	ctx context.Context,
-	file *os.File,
-	location tg.InputFileLocationClass,
-	fileSize int64,
-	_ string, // tempPath parameter kept for interface compatibility but unused
-) error {
-	c.logger.Info("开始并发下载，文件大小: %d bytes, 块大小: %d KB, 并发数: %d", fileSize, ChunkSize/APIAlignment, MaxWorkers)
-
-	totalChunks := int((fileSize + int64(ChunkSize) - 1) / int64(ChunkSize))
-	jobs := make(chan chunkJob, totalChunks)
-	results := make(chan chunkResult, totalChunks)
-
-	// 启动工作协程
-	c.startDownloadWorkers(ctx, location, jobs, results)
-
-	// 发送下载任务
-	c.generateDownloadJobs(jobs, totalChunks, fileSize)
-
-	// 收集结果并写入文件
-	return c.collectAndWriteResults(file, results, totalChunks)
-}
-
-// startDownloadWorkers 启动下载工作协程
-func (c *Client) startDownloadWorkers(
-	ctx context.Context,
-	location tg.InputFileLocationClass,
-	jobs <-chan chunkJob,
-	results chan<- chunkResult,
-) {
-	for i := 0; i < MaxWorkers; i++ {
-		go func(workerID int) {
-			for job := range jobs {
-				result := c.downloadChunkWithRetry(ctx, location, job, workerID)
-				results <- result
-			}
-		}(i)
-	}
-}
-
-// downloadChunkWithRetry 带重试的下载单个块
-func (c *Client) downloadChunkWithRetry(ctx context.Context, location tg.InputFileLocationClass, job chunkJob, workerID int) chunkResult {
-	c.logger.Debug("Worker %d 开始下载块 %d (offset: %d, size: %d)", workerID, job.index, job.offset, job.size)
-
-	var data []byte
-	var err error
-
-	for retry := 0; retry < MaxRetries; retry++ {
-		if retry > 0 {
-			delay := time.Duration(retry) * BaseRetryDelay
-			c.logger.Debug("Worker %d 重试块 %d (第%d次)", workerID, job.index, retry)
-			time.Sleep(delay)
-		}
-
-		data, err = c.downloadSingleChunk(ctx, location, job.offset, job.size)
-		if err == nil {
-			break
-		}
-
-		if c.isAPILimitError(err) {
-			c.logger.Warn("Worker %d 遇到API限制: %v", workerID, err)
-			c.handleAPILimitDelay(err, retry)
-			continue
-		}
-
-		// 其他错误直接退出重试
-		break
-	}
-
-	return chunkResult{
-		index: job.index,
-		data:  data,
-		err:   err,
-	}
-}
-
-// downloadSingleChunk 下载单个块
-func (c *Client) downloadSingleChunk(ctx context.Context, location tg.InputFileLocationClass, offset int64, size int) ([]byte, error) {
-	fileData, err := c.API.UploadGetFile(ctx, &tg.UploadGetFileRequest{
-		Precise:  true,
-		Location: location,
-		Offset:   offset,
-		Limit:    size,
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	uploadFile, ok := fileData.(*tg.UploadFile)
-	if !ok {
-		return nil, fmt.Errorf("未知的文件数据类型")
-	}
-
-	return uploadFile.Bytes, nil
-}
-
-// isAPILimitError 检查是否为API限制错误
-func (c *Client) isAPILimitError(err error) bool {
-	errStr := err.Error()
-	return strings.Contains(errStr, "LIMIT_INVALID") ||
-		strings.Contains(errStr, "FLOOD_WAIT") ||
-		strings.Contains(errStr, "420")
-}
-
-// handleAPILimitDelay 处理API限制错误的延迟
-func (c *Client) handleAPILimitDelay(err error, retry int) {
-	if strings.Contains(err.Error(), "FLOOD_WAIT") {
-		time.Sleep(time.Duration(retry+1) * FloodWaitMultiplier * BaseRetryDelay)
-	}
-}
-
-// generateDownloadJobs 生成下载任务
-func (c *Client) generateDownloadJobs(jobs chan<- chunkJob, totalChunks int, fileSize int64) {
-	go func() {
-		defer close(jobs)
-		for i := 0; i < totalChunks; i++ {
-			offset, size := c.calculateChunkParams(i, fileSize)
-			jobs <- chunkJob{offset: offset, size: size, index: i}
-		}
-	}()
-}
-
-// calculateChunkParams 计算对齐的偏移量和大小
-func (c *Client) calculateChunkParams(i int, fileSize int64) (offset int64, size int) {
-	offset = int64(i) * int64(ChunkSize)
-	if offset%ChunkAlignment != 0 {
-		offset = (offset / ChunkAlignment) * ChunkAlignment
-	}
-
-	size = ChunkSize
-	if offset+int64(size) > fileSize {
-		size = int(fileSize - offset)
-	}
-
-	if size%ChunkAlignment != 0 {
-		size = (size / ChunkAlignment) * ChunkAlignment
-		if size == 0 {
-			size = ChunkAlignment
-		}
-	}
-
-	return offset, size
-}
-
-// collectAndWriteResults 收集结果并写入文件
-func (c *Client) collectAndWriteResults(file *os.File, results <-chan chunkResult, totalChunks int) error {
-	chunks := make([][]byte, totalChunks)
-	var completedChunks int
-	var totalBytes int64
-
-	for i := 0; i < totalChunks; i++ {
-		result := <-results
-		if result.err != nil {
-			return fmt.Errorf("下载块 %d 失败: %v", result.index, result.err)
-		}
-
-		chunks[result.index] = result.data
-		completedChunks++
-		totalBytes += int64(len(result.data))
-
-		if completedChunks%ProgressChunkInterval == 0 || completedChunks == totalChunks {
-			progress := float64(completedChunks) / float64(totalChunks) * 100
-			c.logger.Info("下载进度: %.1f%% (%d/%d 块)", progress, completedChunks, totalChunks)
-		}
-	}
-
-	// 按顺序写入文件
-	c.logger.Info("开始写入文件...")
-	for i, chunk := range chunks {
-		if chunk == nil {
-			return fmt.Errorf("块 %d 数据为空", i)
-		}
-		if _, err := file.Write(chunk); err != nil {
-			return fmt.Errorf("写入块 %d 失败: %v", i, err)
-		}
-	}
-
-	if err := file.Sync(); err != nil {
-		return fmt.Errorf("同步文件失败: %w", err)
-	}
-	c.logger.Info("并发下载完成，总大小: %d bytes", totalBytes)
-	return nil
 }
 
 func (c *Client) downloadFileChunks(
@@ -1239,7 +1029,7 @@ func (c *Client) createMediaInfo(msg *tg.Message) *downloader.MediaInfo {
 				FileReference: photo.FileReference,
 				FileName:      fmt.Sprintf("photo_%d_%d.jpg", c.targetChatID, msg.ID),
 				FileSize:      fileSize,
-				MediaType:     "photo",
+				MediaType:     mediaTypePhoto,
 				ChatID:        c.targetChatID,
 				Date:          time.Unix(int64(msg.Date), 0),
 			}
@@ -1263,7 +1053,7 @@ func (c *Client) createMediaInfo(msg *tg.Message) *downloader.MediaInfo {
 				FileReference: doc.FileReference,
 				FileName:      fileName,
 				FileSize:      doc.Size,
-				MediaType:     "document",
+				MediaType:     mediaTypeDocument,
 				MimeType:      doc.MimeType,
 				ChatID:        c.targetChatID,
 				Date:          time.Unix(int64(msg.Date), 0),
@@ -1303,7 +1093,7 @@ func (c *Client) handleMessage(_ context.Context, message *tg.Message, targetCha
 	c.logger.Info("媒体信息创建成功: %+v", mediaInfo)
 
 	// 下载媒体文件
-	go func() {
+	go func() { //nolint:gosec // 异步下载使用独立上下文，避免被消息处理上下文取消
 		downloadCtx := context.Background()
 		c.logger.Info("开始下载媒体文件: %s", mediaInfo.FileName)
 		c.downloader.DownloadSingle(downloadCtx, mediaInfo)
