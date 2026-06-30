@@ -10,7 +10,7 @@ permissions:
   security-events: write
 
 env:
-  GO_VERSION: '1.21'
+  GO_VERSION: '1.23'
   GOPROXY: 'https://proxy.golang.org,direct'
 
 jobs:
@@ -19,10 +19,10 @@ jobs:
     name: Test and Build
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -45,7 +45,7 @@ jobs:
           ls -la tg-down
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: tg-down-linux
           path: tg-down
@@ -55,15 +55,15 @@ jobs:
     name: Security Scan
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@v2.22.9
+        uses: securego/gosec@v2.22.10
         with:
           args: './...'
 
@@ -73,10 +73,10 @@ jobs:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
