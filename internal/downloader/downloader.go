@@ -11,45 +11,72 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gotd/td/telegram"
-
 	"tg-down/internal/logger"
 )
 
 const (
 	// DirectoryPermission is the permission mode for creating directories
 	DirectoryPermission = 0750
-	// DownloadDelayMs is the simulated download delay in milliseconds
-	DownloadDelayMs = 100
 	// MegabyteDivisor is the divisor for converting bytes to megabytes
 	MegabyteDivisor = 1024 * 1024
 )
 
+// 媒体类型分类目录名
+const (
+	mediaTypePhoto     = "photo"
+	mediaTypeDocument  = "document"
+	mediaTypeVideo     = "video"
+	mediaTypeAnimation = "animation"
+	mediaTypeAudio     = "audio"
+	mediaTypeVoice     = "voice"
+	mediaTypeOther     = "other"
+)
+
 // MediaInfo 媒体文件信息
 type MediaInfo struct {
-	MessageID     int
-	FileID        int64
-	AccessHash    int64
-	FileReference []byte
-	ThumbSize     string
-	MediaType     string // "photo" or "document"
-	FileName      string
-	FileSize      int64
-	MimeType      string
-	ChatID        int64
-	Date          time.Time
+	MessageID int64  // Telegram 消息ID（TDLib 为大整数）
+	TDFileID  int32  // TDLib 内部文件ID，用于 DownloadFile
+	MediaType string // photo/document/video/animation/audio/voice
+	FileName  string
+	FileSize  int64
+	MimeType  string
+	ChatID    int64
+	Date      time.Time
+	TaskID    string // 所属任务ID（CLI 模式使用合成ID）
+}
+
+// RecordStatus 下载记录状态
+type RecordStatus string
+
+const (
+	// RecordStarted 表示开始下载
+	RecordStarted RecordStatus = "downloading"
+	// RecordCompleted 表示下载完成
+	RecordCompleted RecordStatus = "completed"
+	// RecordFailed 表示下载失败
+	RecordFailed RecordStatus = "failed"
+	// RecordSkipped 表示跳过下载（文件已存在）
+	RecordSkipped RecordStatus = "skipped"
+)
+
+// RecordEvent 下载历史记录事件
+type RecordEvent struct {
+	Media    *MediaInfo
+	Status   RecordStatus
+	FilePath string
+	Reason   string
 }
 
 // Downloader 下载器
 type Downloader struct {
-	client        *telegram.Client
-	downloadPath  string
-	maxConcurrent int
-	logger        *logger.Logger
-	semaphore     chan struct{}
-	wg            sync.WaitGroup
-	stats         *DownloadStats
-	downloadFunc  func(context.Context, *MediaInfo, string) error
+	downloadPath   string
+	maxConcurrent  int
+	logger         *logger.Logger
+	semaphore      chan struct{}
+	stats          *DownloadStats
+	downloadFunc   func(context.Context, *MediaInfo, string) error
+	classifyByType bool
+	recordFunc     func(context.Context, RecordEvent)
 }
 
 // DownloadStats 下载统计
@@ -64,9 +91,8 @@ type DownloadStats struct {
 }
 
 // New 创建新的下载器
-func New(client *telegram.Client, downloadPath string, maxConcurrent int, logger *logger.Logger) *Downloader {
+func New(downloadPath string, maxConcurrent int, logger *logger.Logger) *Downloader {
 	return &Downloader{
-		client:        client,
 		downloadPath:  downloadPath,
 		maxConcurrent: maxConcurrent,
 		logger:        logger,
@@ -80,13 +106,49 @@ func (d *Downloader) SetDownloadFunc(fn func(context.Context, *MediaInfo, string
 	d.downloadFunc = fn
 }
 
-// GetStats 获取下载统计
-func (d *Downloader) GetStats() *DownloadStats {
+// SetClassifyByType 设置是否按媒体类型分类存储
+func (d *Downloader) SetClassifyByType(v bool) {
+	d.classifyByType = v
+}
+
+// SetRecordFunc 设置下载历史记录回调
+func (d *Downloader) SetRecordFunc(fn func(context.Context, RecordEvent)) {
+	d.recordFunc = fn
+}
+
+// record 触发下载历史记录回调，未设置时无操作
+func (d *Downloader) record(ctx context.Context, evt RecordEvent) {
+	if d.recordFunc == nil {
+		return
+	}
+	d.recordFunc(ctx, evt)
+}
+
+// classifyDir 根据媒体类型返回分类子目录名
+func classifyDir(mediaType string) string {
+	switch mediaType {
+	case mediaTypePhoto, mediaTypeDocument, mediaTypeVideo, mediaTypeAnimation, mediaTypeAudio, mediaTypeVoice:
+		return mediaType
+	default:
+		return mediaTypeOther
+	}
+}
+
+// Stats 是下载统计的只读快照（无锁，便于 JSON 序列化）
+type Stats struct {
+	Total          int   `json:"total"`
+	Downloaded     int   `json:"downloaded"`
+	Failed         int   `json:"failed"`
+	Skipped        int   `json:"skipped"`
+	TotalSize      int64 `json:"total_size"`
+	DownloadedSize int64 `json:"downloaded_size"`
+}
+
+// Snapshot 返回当前下载统计的只读快照
+func (d *Downloader) Snapshot() Stats {
 	d.stats.mu.RLock()
 	defer d.stats.mu.RUnlock()
-
-	// 创建一个副本来避免锁复制
-	return &DownloadStats{
+	return Stats{
 		Total:          d.stats.Total,
 		Downloaded:     d.stats.Downloaded,
 		Failed:         d.stats.Failed,
@@ -116,9 +178,14 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 
 	// 创建下载目录
 	chatDir := filepath.Join(d.downloadPath, fmt.Sprintf("chat_%d", media.ChatID))
+	if d.classifyByType {
+		chatDir = filepath.Join(chatDir, classifyDir(media.MediaType))
+	}
 	if err := os.MkdirAll(chatDir, DirectoryPermission); err != nil {
 		d.logger.Error("创建目录失败: %v", err)
 		d.updateStats(false, 0)
+		d.record(ctx, RecordEvent{Media: media, Status: RecordStarted, FilePath: chatDir})
+		d.record(ctx, RecordEvent{Media: media, Status: RecordFailed, FilePath: chatDir, Reason: err.Error()})
 		return err
 	}
 
@@ -126,7 +193,7 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 	fileName := media.FileName
 	if fileName == "" {
 		ext := d.getFileExtension(media.MimeType)
-		fileName = fmt.Sprintf("file_%d_%d%s", media.MessageID, media.FileID, ext)
+		fileName = fmt.Sprintf("file_%d_%d%s", media.MessageID, media.TDFileID, ext)
 	}
 
 	// 清理文件名以防止路径遍历攻击
@@ -137,7 +204,10 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 	if !d.isSafePath(filePath, d.downloadPath) {
 		d.logger.Error("不安全的文件路径: %s", filePath)
 		d.updateStats(false, 0)
-		return fmt.Errorf("unsafe file path: %s", filePath)
+		err := fmt.Errorf("unsafe file path: %s", filePath)
+		d.record(ctx, RecordEvent{Media: media, Status: RecordStarted, FilePath: filePath})
+		d.record(ctx, RecordEvent{Media: media, Status: RecordFailed, FilePath: filePath, Reason: err.Error()})
+		return err
 	}
 
 	// 检查文件是否已存在
@@ -146,65 +216,30 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 		d.stats.mu.Lock()
 		d.stats.Skipped++
 		d.stats.mu.Unlock()
+		d.record(ctx, RecordEvent{Media: media, Status: RecordSkipped, FilePath: filePath})
 		return nil
 	}
 
+	if d.downloadFunc == nil {
+		d.updateStats(false, 0)
+		d.record(ctx, RecordEvent{Media: media, Status: RecordStarted, FilePath: filePath})
+		d.record(ctx, RecordEvent{Media: media, Status: RecordFailed, FilePath: filePath, Reason: "下载函数未设置"})
+		return fmt.Errorf("下载函数未设置")
+	}
+
 	d.logger.Info("开始下载: %s (大小: %d bytes)", fileName, media.FileSize)
+	d.record(ctx, RecordEvent{Media: media, Status: RecordStarted, FilePath: filePath})
 
-	// 使用设置的下载函数
-	if d.downloadFunc != nil {
-		if err := d.downloadFunc(ctx, media, filePath); err != nil {
-			d.logger.Error("下载失败 %s: %v", fileName, err)
-			d.updateStats(false, 0)
-			return err
-		}
-	} else {
-		// 创建临时文件作为占位符
-		tempPath := filePath + ".tmp"
-
-		// 验证临时文件路径安全性
-		if !d.isSafePath(tempPath, d.downloadPath) {
-			d.logger.Error("不安全的临时文件路径: %s", tempPath)
-			d.updateStats(false, 0)
-			return fmt.Errorf("unsafe temp file path: %s", tempPath)
-		}
-
-		// 额外的路径安全检查
-		cleanTempPath := filepath.Clean(tempPath)
-		if strings.Contains(cleanTempPath, "..") || !strings.HasPrefix(cleanTempPath, filepath.Clean(d.downloadPath)) {
-			d.logger.Error("检测到不安全的路径: %s", tempPath)
-			d.updateStats(false, 0)
-			return fmt.Errorf("detected unsafe path: %s", tempPath)
-		}
-
-		file, err := os.Create(cleanTempPath)
-		if err != nil {
-			d.logger.Error("创建临时文件失败 %s: %v", fileName, err)
-			d.updateStats(false, 0)
-			return err
-		}
-		closeErr := file.Close()
-		if closeErr != nil {
-			d.logger.Error("关闭临时文件失败 %s: %v", fileName, closeErr)
-		}
-
-		// 模拟下载过程
-		d.logger.Debug("正在下载文件: %s", fileName)
-		time.Sleep(DownloadDelayMs * time.Millisecond) // 模拟下载时间
-
-		// 下载完成后重命名文件
-		if err := os.Rename(tempPath, filePath); err != nil {
-			d.logger.Error("重命名文件失败 %s: %v", fileName, err)
-			if removeErr := os.Remove(tempPath); removeErr != nil {
-				d.logger.Error("清理临时文件失败 %s: %v", tempPath, removeErr)
-			}
-			d.updateStats(false, 0)
-			return err
-		}
+	if err := d.downloadFunc(ctx, media, filePath); err != nil {
+		d.logger.Error("下载失败 %s: %v", fileName, err)
+		d.updateStats(false, 0)
+		d.record(ctx, RecordEvent{Media: media, Status: RecordFailed, FilePath: filePath, Reason: err.Error()})
+		return err
 	}
 
 	d.logger.Info("下载完成: %s", fileName)
 	d.updateStats(true, media.FileSize)
+	d.record(ctx, RecordEvent{Media: media, Status: RecordCompleted, FilePath: filePath})
 	return nil
 }
 
@@ -297,8 +332,8 @@ func (d *Downloader) DownloadSingle(ctx context.Context, media *MediaInfo) {
 	}
 }
 
-// DownloadBatch 批量下载媒体文件
-func (d *Downloader) DownloadBatch(ctx context.Context, mediaList []*MediaInfo) {
+// DownloadBatch 批量下载媒体文件，返回的 WaitGroup 供调用方等待本批次完成
+func (d *Downloader) DownloadBatch(ctx context.Context, mediaList []*MediaInfo) *sync.WaitGroup {
 	d.stats.mu.Lock()
 	d.stats.Total += len(mediaList)
 	for _, media := range mediaList {
@@ -308,25 +343,22 @@ func (d *Downloader) DownloadBatch(ctx context.Context, mediaList []*MediaInfo) 
 
 	d.logger.Info("开始批量下载 %d 个文件", len(mediaList))
 
+	wg := &sync.WaitGroup{}
 	for _, media := range mediaList {
-		d.wg.Add(1)
+		wg.Add(1)
 		go func(m *MediaInfo) {
-			defer d.wg.Done()
+			defer wg.Done()
 			if err := d.DownloadMedia(ctx, m); err != nil {
 				d.logger.Error("下载媒体文件失败: %v", err)
 			}
 		}(media)
 	}
-}
-
-// Wait 等待所有下载完成
-func (d *Downloader) Wait() {
-	d.wg.Wait()
+	return wg
 }
 
 // PrintStats 打印下载统计
 func (d *Downloader) PrintStats() {
-	stats := d.GetStats()
+	stats := d.Snapshot()
 	d.logger.Info("下载统计:")
 	d.logger.Info("  总计: %d", stats.Total)
 	d.logger.Info("  已下载: %d", stats.Downloaded)

@@ -5,15 +5,15 @@ api:
 
 download:
   path: "./downloads"  # 下载路径
-  max_concurrent: 5    # 最大并发下载数
-  batch_size: 100      # 批量处理大小
-  chunk_size: 512      # 分块下载大小 (KB)
-  max_workers: 4       # 分块下载最大工作线程数
-  use_chunked: true    # 是否启用分块下载 (大于1MB的文件)
-  
+  max_concurrent: 5    # 同时下载的文件数
+  batch_size: 100      # 每批拉取的历史消息数
+  chunk_size: 512      # 单文件分片大小 (KB)，可选: 4/8/16/32/64/128/256/512
+  max_workers: 4       # 单文件并行下载线程数 (多线程加速)
+  disable_classify_by_type: false  # 按媒体类型归档默认开启；设为 true 可恢复旧版扁平目录布局
+
 chat:
-  target_id: 0  # 目标群组ID (可选)
-  
+  target_id: 0  # 目标群组ID (可选，留空则运行时交互选择)
+
 log:
   level: "info"  # 日志级别: debug, info, warn, error
 
@@ -30,3 +30,11 @@ retry:
 rate_limit:
   requests_per_second: 5.0  # 每秒请求数
   burst_size: 10            # 突发请求大小
+
+# 任务队列配置
+queue:
+  max_concurrent_tasks: 1  # 同时运行的历史下载任务数（监控任务不占用此配额，独立运行）
+
+# 持久化存储配置
+store:
+  path: "./tg-down.db"  # SQLite 数据库文件路径

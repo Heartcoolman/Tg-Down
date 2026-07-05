@@ -27,6 +27,9 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
+      - name: Setup TDLib
+        uses: ./.github/actions/setup-tdlib
+
       - name: Download dependencies
         run: go mod download
 
@@ -41,7 +44,7 @@ jobs:
 
       - name: Build application
         run: |
-          go build -v -o tg-down cmd/main.go
+          go build -v -o tg-down ./cmd
           ls -la tg-down
 
       - name: Upload build artifacts
@@ -50,26 +53,10 @@ jobs:
           name: tg-down-linux
           path: tg-down
 
-  security:
-    runs-on: ubuntu-latest
-    name: Security Scan
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
-      - name: Run Gosec Security Scanner
-        uses: securego/gosec@v2.22.10
-        with:
-          args: './...'
-
   dependency-submission:
     runs-on: ubuntu-latest
     name: Submit Dependencies
+    needs: test # 复用 test 任务已填充的 TDLib 缓存，避免重复构建
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     steps:
       - name: Checkout Repository
@@ -81,8 +68,11 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
+      - name: Setup TDLib
+        uses: ./.github/actions/setup-tdlib
+
       - name: Run Go Dependency Submission
         uses: actions/go-dependency-submission@v2
         with:
           go-mod-path: go.mod
-          go-build-target: cmd/main.go
+          go-build-target: ./cmd

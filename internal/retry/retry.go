@@ -163,17 +163,6 @@ func (r *Retrier) Do(ctx context.Context, fn func() error) error {
 	return fmt.Errorf("operation failed after %d retries, last error: %w", r.config.MaxRetries, lastErr)
 }
 
-// DoWithResult executes a function that returns a result and error with retry logic
-func (r *Retrier) DoWithResult(ctx context.Context, fn func() (interface{}, error)) (interface{}, error) {
-	var result interface{}
-	err := r.Do(ctx, func() error {
-		var err error
-		result, err = fn()
-		return err
-	})
-	return result, err
-}
-
 // calculateDelay calculates the delay for the given attempt using exponential backoff with jitter
 func (r *Retrier) calculateDelay(attempt int) time.Duration {
 	// Exponential backoff: baseDelay * 2^attempt
@@ -229,16 +218,6 @@ func (r *Retrier) WithBaseDelay(baseDelay time.Duration) *Retrier {
 func (r *Retrier) WithMaxDelay(maxDelay time.Duration) *Retrier {
 	newConfig := *r.config
 	newConfig.MaxDelay = maxDelay
-	return &Retrier{
-		config: &newConfig,
-		logger: r.logger,
-	}
-}
-
-// WithShouldRetry creates a new retrier with custom retry logic
-func (r *Retrier) WithShouldRetry(shouldRetry func(error) bool) *Retrier {
-	newConfig := *r.config
-	newConfig.ShouldRetry = shouldRetry
 	return &Retrier{
 		config: &newConfig,
 		logger: r.logger,

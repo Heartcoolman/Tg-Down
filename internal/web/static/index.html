@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Tg-Down 管理台</title>
+<link rel="stylesheet" href="/prism.css" />
+<style>
+  /* App shell — 仅布局，颜色/字体/圆角/阴影全部消费 Prism 设计 token */
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: var(--text-body);
+    font-family: var(--font-sans);
+    background: var(--bg-secondary);
+    color: var(--label-primary);
+    -webkit-font-smoothing: antialiased;
+  }
+  .hidden { display: none !important; }
+
+  .app-header {
+    position: sticky; top: 0; z-index: 20;
+    background: var(--material-bg);
+    backdrop-filter: saturate(180%) blur(var(--blur-regular));
+    -webkit-backdrop-filter: saturate(180%) blur(var(--blur-regular));
+    border-bottom: 1px solid var(--separator);
+  }
+  .app-header__row {
+    max-width: 880px; margin: 0 auto;
+    padding: var(--s-3) var(--s-5);
+    display: flex; align-items: center; gap: var(--s-3);
+  }
+  .app-logo {
+    width: 28px; height: 28px; border-radius: var(--radius-sm); flex: none;
+    background: linear-gradient(135deg, var(--blue-500), var(--green-600));
+  }
+  .app-title { flex: 1; margin: 0; font: var(--text-headline); font-family: var(--font-sans); letter-spacing: -.01em; }
+
+  .app-main { max-width: 880px; margin: 0 auto; padding: var(--s-5) var(--s-5) var(--s-7); }
+  .app-card { margin-bottom: var(--s-4); }
+  .app-eyebrow {
+    font: var(--text-footnote); font-family: var(--font-sans);
+    text-transform: uppercase; letter-spacing: .04em;
+    color: var(--label-secondary); margin-bottom: var(--s-2);
+  }
+  .app-muted { color: var(--label-secondary); font: var(--text-subhead); font-family: var(--font-sans); margin: 0 0 var(--s-3); }
+  .app-row { display: flex; align-items: center; gap: var(--s-2); }
+  .app-form { display: flex; flex-direction: column; gap: var(--s-2); }
+  .app-form a { color: var(--color-accent); text-decoration: none; }
+  .app-field-row { display: flex; gap: var(--s-2); align-items: stretch; }
+  .app-field-grow { flex: 1; }
+  .app-spread { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
+
+  /* 顶栏状态点 */
+  .app-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--label-tertiary); flex: none; }
+  .app-dot.ok  { background: var(--color-success); box-shadow: 0 0 0 4px var(--tint-success-bg); }
+  .app-dot.wait{ background: var(--color-warning); box-shadow: 0 0 0 4px var(--tint-warning-bg); }
+  .app-dot.err { background: var(--color-danger);  box-shadow: 0 0 0 4px var(--tint-danger-bg); }
+
+  /* 统计网格 */
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: var(--s-3); }
+  .stat { background: var(--fill-tertiary); border-radius: var(--radius-inner); padding: var(--s-3) var(--s-4); }
+  .stat__n { font: var(--text-title-2); font-family: var(--font-sans); letter-spacing: -.02em; }
+  .stat__n.green { color: var(--color-success); }
+  .stat__n.red   { color: var(--color-danger); }
+  .stat__l { font: var(--text-footnote); font-family: var(--font-sans); color: var(--label-secondary); margin-top: 2px; }
+
+  /* 监控横幅 */
+  .app-banner {
+    display: flex; align-items: center; gap: var(--s-3);
+    background: var(--tint-success-bg); border-radius: var(--radius-inner);
+    padding: var(--s-3) var(--s-4); margin-bottom: var(--s-4);
+  }
+  .app-banner__txt { flex: 1; font: var(--text-subhead); font-family: var(--font-sans); }
+
+  /* 列表行动作 + 头像 */
+  .app-row-acts { display: flex; gap: var(--s-2); flex: none; }
+  .app-avatar {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 34px; height: 34px; border-radius: var(--radius-pill);
+    background: var(--fill-tertiary); color: var(--label-secondary);
+    font: var(--text-subhead); font-family: var(--font-sans); font-weight: 600;
+  }
+  .app-empty { color: var(--label-secondary); font: var(--text-subhead); font-family: var(--font-sans); text-align: center; padding: var(--s-5) 0; }
+
+  /* 搜索行 */
+  .app-search { margin-bottom: var(--s-3); }
+
+  /* 日志控制台 */
+  .app-log {
+    background: var(--fill-tertiary); border-radius: var(--radius-inner);
+    height: 240px; overflow-y: auto; padding: var(--s-3) var(--s-4);
+    font-family: var(--font-mono); font-size: 12px; line-height: 1.7;
+  }
+  .app-log div { white-space: pre-wrap; word-break: break-all; }
+  .app-log .lv { color: var(--label-tertiary); }
+  .app-log .WARN { color: var(--color-warning); }
+  .app-log .ERROR, .app-log .FATAL { color: var(--color-danger); }
+  .app-log .ts { color: var(--label-tertiary); margin-right: var(--s-2); }
+
+  /* Toast */
+  .app-toast {
+    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(20px);
+    background: var(--label-primary); color: var(--bg);
+    padding: var(--s-2) var(--s-4); border-radius: var(--radius-input);
+    font: var(--text-subhead); font-family: var(--font-sans); font-weight: 500;
+    opacity: 0; transition: opacity var(--dur-enter) var(--ease-standard), transform var(--dur-enter) var(--ease-standard);
+    pointer-events: none; z-index: 50; box-shadow: var(--shadow-3);
+  }
+  .app-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+<header class="app-header">
+  <div class="app-header__row">
+    <div class="app-logo"></div>
+    <h1 class="app-title">Tg-Down</h1>
+    <span class="prism-tag" id="statusTag">
+      <span class="app-dot" id="dot"></span>
+      <span class="prism-tag__label" id="statusLabel">连接中…</span>
+    </span>
+  </div>
+</header>
+
+<main class="app-main">
+  <!-- 认证 -->
+  <section class="prism-card app-card" id="authCard">
+    <div class="prism-card__body">
+      <div class="app-eyebrow">登录</div>
+      <div id="authBody"></div>
+    </div>
+  </section>
+
+  <!-- 统计 -->
+  <section class="prism-card app-card hidden" id="statsCard">
+    <div class="prism-card__body">
+      <div class="app-eyebrow">下载统计</div>
+      <div class="stat-grid" id="statsGrid"></div>
+    </div>
+  </section>
+
+  <!-- 任务队列 -->
+  <section class="prism-card app-card hidden" id="tasksCard">
+    <div class="prism-card__body">
+      <div class="app-eyebrow">下载任务</div>
+      <div class="app-field-row" style="margin-bottom:var(--s-3)">
+        <div class="prism-select app-field-grow">
+          <div class="prism-select__field">
+            <select id="taskChatSelect" class="prism-select__control"></select>
+            <span class="prism-select__chevron">▾</span>
+          </div>
+        </div>
+        <button class="prism-btn prism-btn--tinted prism-btn--medium" onclick="enqueueTask('history', taskChatId())">
+          <span class="prism-btn__label">开始下载历史</span>
+        </button>
+        <button class="prism-btn prism-btn--tinted prism-btn--medium" onclick="enqueueTask('monitor', taskChatId())">
+          <span class="prism-btn__label">开始监控</span>
+        </button>
+      </div>
+      <div id="taskList"><div class="app-empty">暂无任务</div></div>
+    </div>
+  </section>
+
+  <!-- 聊天列表 -->
+  <section class="prism-card app-card hidden" id="chatsCard">
+    <div class="prism-card__body">
+      <div class="app-eyebrow">聊天 · 群组 · 频道</div>
+      <div id="monitorBanner" class="app-banner hidden">
+        <span class="app-dot ok"></span>
+        <span class="app-banner__txt" id="monitorText"></span>
+        <button class="prism-btn prism-btn--gray prism-btn--small" onclick="stopMonitor()">
+          <span class="prism-btn__label">停止监控</span>
+        </button>
+      </div>
+      <div class="app-field-row app-search">
+        <div class="prism-field app-field-grow">
+          <div class="prism-field__control">
+            <input id="search" class="prism-field__input" type="text" placeholder="搜索聊天名称…" oninput="renderChats()" />
+          </div>
+        </div>
+        <button class="prism-btn prism-btn--gray prism-btn--medium" id="refreshBtn" onclick="refreshChats()">
+          <span class="prism-btn__label">刷新</span>
+        </button>
+      </div>
+      <div id="chatList"><div class="app-empty">加载中…</div></div>
+    </div>
+  </section>
+
+  <!-- 下载历史 -->
+  <section class="prism-card app-card hidden" id="historyCard">
+    <div class="prism-card__body">
+      <div class="app-eyebrow">下载历史</div>
+
+      <div id="historyStatsChart" style="margin-bottom:var(--s-4)"></div>
+
+      <div class="prism-segmented prism-segmented--small" id="historyTypeSeg" style="margin-bottom:var(--s-3)"></div>
+
+      <div class="app-field-row" style="margin-bottom:var(--s-3)">
+        <div class="prism-select">
+          <div class="prism-select__field">
+            <select id="historyChatFilter" class="prism-select__control" onchange="onHistoryChatChange(this.value)">
+              <option value="0">全部聊天</option>
+            </select>
+            <span class="prism-select__chevron">▾</span>
+          </div>
+        </div>
+        <div class="prism-select">
+          <div class="prism-select__field">
+            <select id="historyStatusFilter" class="prism-select__control" onchange="onHistoryStatusChange(this.value)">
+              <option value="">全部状态</option>
+              <option value="downloading">下载中</option>
+              <option value="completed">已完成</option>
+              <option value="failed">失败</option>
+              <option value="skipped">已跳过</option>
+            </select>
+            <span class="prism-select__chevron">▾</span>
+          </div>
+        </div>
+        <div class="prism-search app-field-grow">
+          <span class="prism-search__icon">⌕</span>
+          <input id="historySearch" class="prism-search__input" type="search" placeholder="搜索文件名…" oninput="onHistorySearch(this.value)" />
+        </div>
+      </div>
+
+      <div class="app-field-row" style="margin-bottom:var(--s-3)">
+        <button type="button" class="prism-btn prism-btn--gray prism-btn--small" id="historyFromTrigger" onclick="toggleDatePicker('from')">
+          <span class="prism-btn__label">起始日期</span>
+        </button>
+        <button type="button" class="prism-btn prism-btn--gray prism-btn--small" id="historyToTrigger" onclick="toggleDatePicker('to')">
+          <span class="prism-btn__label">结束日期</span>
+        </button>
+        <button type="button" class="prism-btn prism-btn--plain prism-btn--small" onclick="clearHistoryDates()">
+          <span class="prism-btn__label">清除日期</span>
+        </button>
+      </div>
+      <div id="historyPicker_from" class="hidden"></div>
+      <div id="historyPicker_to" class="hidden"></div>
+
+      <div id="historyList"><div class="app-empty">加载中…</div></div>
+      <div class="app-spread" id="historyPager" style="margin-top:var(--s-3)"></div>
+    </div>
+  </section>
+
+  <!-- 日志 -->
+  <section class="prism-card app-card hidden" id="logCard">
+    <div class="prism-card__body">
+      <div class="app-eyebrow">运行日志</div>
+      <div class="app-log" id="log"></div>
+    </div>
+  </section>
+</main>
+
+<div class="app-toast" id="toast"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let chats = [];
+let tasks = [];
+let lastState = null;
+let lastErr = "";
+let target = 0;
+let cred = { id: "", hash: "", phone: "" }; // 登录草稿，避免重渲染丢失输入
+
+/* ---------- 下载历史筛选状态 ---------- */
+const HISTORY_TYPES = ["", "photo", "document", "video", "animation", "audio", "voice"];
+let historyFilters = { type: "", chat_id: 0, status: "", q: "", from: 0, to: 0 };
+let historyPage = 1;
+let historyPageSize = 20;
+let historyTotal = 0;
+let historyOpenPicker = null; // 'from' | 'to' | null
+let historyView = { from: null, to: null }; // 日历当前展示的 {y, m}，null 表示跟随已选日期/今天
+let historySearchTimer = null;
+
+const STATE_LABEL = {
+  connecting: "连接中…", need_credentials: "请登录", need_login: "需要登录",
+  waiting_code: "等待验证码", waiting_password: "等待密码", ready: "已就绪", error: "出错",
+};
+const STATE_TONE = {
+  ready: "success", error: "danger",
+  need_credentials: "accent", waiting_code: "warning", waiting_password: "warning", need_login: "warning",
+};
+
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+async function api(path, body) {
+  const opt = { method: body === undefined ? "GET" : "POST" };
+  if (body !== undefined) {
+    opt.headers = { "Content-Type": "application/json" };
+    opt.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opt);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+  return data;
+}
+
+function fmtSize(b) {
+  if (!b) return "0 MB";
+  const mb = b / 1048576;
+  if (mb >= 1024) return (mb / 1024).toFixed(2) + " GB";
+  return mb.toFixed(1) + " MB";
+}
+
+/* ---------- 状态渲染 ---------- */
+function applyState(s) {
+  const st = s.state;
+  $("statusLabel").textContent = STATE_LABEL[st] || st;
+
+  const tone = STATE_TONE[st];
+  const tag = $("statusTag");
+  if (tone) tag.setAttribute("data-tone", tone); else tag.removeAttribute("data-tone");
+  $("dot").className = "app-dot" + (st === "ready" ? " ok" : st === "error" ? " err"
+    : (st === "waiting_code" || st === "waiting_password" || st === "need_login") ? " wait" : "");
+
+  const ready = st === "ready";
+  $("authCard").classList.toggle("hidden", ready);
+  $("statsCard").classList.toggle("hidden", !ready);
+  $("tasksCard").classList.toggle("hidden", !ready);
+  $("chatsCard").classList.toggle("hidden", !ready);
+  $("historyCard").classList.toggle("hidden", !ready);
+  $("logCard").classList.toggle("hidden", false);
+
+  // 仅在状态切换时重渲染认证表单，避免每秒快照重建输入框导致闪烁/清空；
+  // 但 error 状态下若错误文案变化（连续两次失败原因不同）也需刷新，否则停留在旧错误。
+  // 草稿值存于 cred 对象并回填，重渲染不丢失用户已输入内容。
+  if (!ready && (st !== lastState || (st === "error" && (s.error || "") !== lastErr))) renderAuth(s);
+  if (ready && lastState !== "ready") {
+    loadChats();
+    loadTasks();
+    loadHistory(historyFilters, 1);
+    loadHistoryStats(historyFilters);
+  }
+  lastState = st;
+  lastErr = s.error || "";
+
+  renderStats(s.stats || {});
+
+  const prevTarget = target;
+  target = s.target_chat || 0;
+  renderMonitor();
+  if (target !== prevTarget) renderChats(); // 仅监控目标变化时重建列表，避免每秒闪烁/滚动跳顶
+}
+
+function btn(label, onclick, variant, extra) {
+  return `<button class="prism-btn prism-btn--${variant || "gray"} prism-btn--medium${extra || ""}" onclick="${onclick}">
+    <span class="prism-btn__label">${label}</span></button>`;
+}
+
+function credForm(label) {
+  return `<div class="app-form">
+    <div class="prism-field"><div class="prism-field__control">
+      <input id="apiIdInput" class="prism-field__input" type="text" inputmode="numeric" placeholder="API ID" value="${escapeHtml(cred.id)}" oninput="cred.id=this.value" /></div></div>
+    <div class="prism-field"><div class="prism-field__control">
+      <input id="apiHashInput" class="prism-field__input" type="text" placeholder="API Hash" value="${escapeHtml(cred.hash)}" oninput="cred.hash=this.value" /></div></div>
+    <div class="prism-field"><div class="prism-field__control">
+      <input id="phoneInput" class="prism-field__input" type="tel" placeholder="手机号（含国家码，如 +8613800138000）" value="${escapeHtml(cred.phone)}" oninput="cred.phone=this.value" /></div></div>
+    ${btn(label, "submitCredentials(this)", "filled", " prism-btn--full")}
+  </div>`;
+}
+
+function renderAuth(s) {
+  const b = $("authBody");
+  if (s.state === "need_credentials") {
+    b.innerHTML = `<p class="app-muted">输入 Telegram 应用凭据登录（从 <a href="https://my.telegram.org/apps" target="_blank" rel="noreferrer">my.telegram.org/apps</a> 获取，凭据将保存到 config.yaml）。</p>`
+      + credForm("登录");
+    setTimeout(() => $("apiIdInput")?.focus(), 50);
+  } else if (s.state === "waiting_code") {
+    b.innerHTML = `<p class="app-muted">请输入发送到你 Telegram 的验证码。</p>
+      <div class="app-field-row">
+        <div class="prism-field app-field-grow"><div class="prism-field__control">
+          <input id="codeInput" class="prism-field__input" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="验证码" /></div></div>
+        ${btn("确认", "submitCode(this)", "filled")}
+      </div>`;
+    setTimeout(() => $("codeInput")?.focus(), 50);
+  } else if (s.state === "waiting_password") {
+    b.innerHTML = `<p class="app-muted">该账号开启了两步验证，请输入密码。</p>
+      <div class="app-field-row">
+        <div class="prism-field app-field-grow"><div class="prism-field__control">
+          <input id="pwInput" class="prism-field__input" type="password" placeholder="两步验证密码" /></div></div>
+        ${btn("确认", "submitPassword(this)", "filled")}
+      </div>`;
+    setTimeout(() => $("pwInput")?.focus(), 50);
+  } else if (s.state === "error") {
+    b.innerHTML = `<p class="app-muted">连接出错：</p>
+      <p style="color:var(--color-danger);margin:0 0 var(--s-3)">${escapeHtml(s.error || "未知错误")}</p>
+      <p class="app-muted">可重新填写登录信息后重试：</p>`
+      + credForm("重新登录");
+  } else {
+    b.innerHTML = `<div class="app-row"><span class="prism-spinner prism-spinner--small"><span class="prism-spinner__ring"></span></span>
+      <span class="app-muted" style="margin:0">正在连接 Telegram…</span></div>`;
+  }
+}
+
+async function submitCredentials(b) {
+  const id = parseInt(($("apiIdInput").value || "").trim(), 10);
+  const hash = ($("apiHashInput").value || "").trim();
+  const phone = ($("phoneInput").value || "").trim();
+  if (!id || !hash || !phone) return toast("请完整填写 API ID / Hash / 手机号");
+  b.disabled = true;
+  try { await api("/api/auth/credentials", { api_id: id, api_hash: hash, phone: phone }); toast("正在连接…"); }
+  catch (e) { toast(e.message); b.disabled = false; }
+}
+async function submitCode(b) {
+  const v = $("codeInput").value.trim(); if (!v) return toast("请输入验证码");
+  b.disabled = true; try { await api("/api/auth/code", { code: v }); } catch (e) { toast(e.message); b.disabled = false; }
+}
+async function submitPassword(b) {
+  const v = $("pwInput").value; if (!v) return toast("请输入密码");
+  b.disabled = true; try { await api("/api/auth/password", { password: v }); } catch (e) { toast(e.message); b.disabled = false; }
+}
+
+function renderStats(st) {
+  $("statsGrid").innerHTML = [
+    { n: st.total || 0, l: "总计" },
+    { n: st.downloaded || 0, l: "已下载", c: "green" },
+    { n: st.skipped || 0, l: "跳过" },
+    { n: st.failed || 0, l: "失败", c: st.failed ? "red" : "" },
+    { n: fmtSize(st.downloaded_size), l: "已下载大小" },
+  ].map(s => `<div class="stat"><div class="stat__n ${s.c || ""}">${s.n}</div><div class="stat__l">${s.l}</div></div>`).join("");
+}
+
+function chatName(id) {
+  const c = chats.find(x => x.id === id);
+  return c ? c.title : ("ID " + id);
+}
+
+/* ---------- 监控 ---------- */
+function renderMonitor() {
+  const banner = $("monitorBanner");
+  if (target && target !== 0) {
+    banner.classList.remove("hidden");
+    $("monitorText").innerHTML = `正在实时监控 <b>${escapeHtml(chatName(target))}</b>，新媒体将自动下载`;
+  } else {
+    banner.classList.add("hidden");
+  }
+}
+async function toggleMonitor(id) {
+  const next = (target === id) ? 0 : id;
+  try { await api("/api/tasks", { kind: "monitor", chat_id: next }); target = next; renderMonitor(); renderChats(); loadTasks();
+    toast(next ? "已开始监控" : "已停止监控"); } catch (e) { toast(e.message); }
+}
+async function stopMonitor() { try { await api("/api/tasks", { kind: "monitor", chat_id: 0 }); target = 0; renderMonitor(); renderChats(); loadTasks(); } catch (e) { toast(e.message); } }
+
+/* ---------- 聊天列表 ---------- */
+async function loadChats() {
+  try { chats = await api("/api/chats"); renderChats(); populateChatSelects(); } catch (e) { /* not ready yet */ }
+}
+async function refreshChats() {
+  const b = $("refreshBtn"); b.disabled = true; b.querySelector(".prism-btn__label").textContent = "刷新中…";
+  try { chats = await api("/api/chats/refresh", {}); renderChats(); populateChatSelects(); toast("已刷新"); }
+  catch (e) { toast(e.message); }
+  finally { b.disabled = false; b.querySelector(".prism-btn__label").textContent = "刷新"; }
+}
+function typeTone(t) { return t === "频道" ? "accent" : t === "超级群组" ? "warning" : ""; }
+function renderChats() {
+  const q = ($("search").value || "").toLowerCase().trim();
+  const list = chats.filter(c => !q || (c.title || "").toLowerCase().includes(q));
+  const el = $("chatList");
+  if (!list.length) { el.innerHTML = `<div class="app-empty">${chats.length ? "无匹配聊天" : "暂无聊天，点击刷新"}</div>`; return; }
+  el.innerHTML = `<ul class="prism-list">` + list.map(c => {
+    const on = c.id === target;
+    const tone = typeTone(c.type);
+    const tag = `<span class="prism-tag"${tone ? ` data-tone="${tone}"` : ""}><span class="prism-tag__label">${escapeHtml(c.type)}</span></span>`;
+    const initial = escapeHtml((c.title || "#").trim().slice(0, 1) || "#");
+    return `<li class="prism-list__row">
+      <span class="prism-list__leading"><span class="app-avatar">${initial}</span></span>
+      <span class="prism-list__main">
+        <span class="prism-list__title">${escapeHtml(c.title) || "(未命名)"}</span>
+        <span class="prism-list__subtitle">ID ${c.id} · ${tag}</span>
+      </span>
+      <span class="prism-list__trailing app-row-acts">
+        <button class="prism-btn prism-btn--gray prism-btn--small" onclick="downloadChat(${c.id}, this)"><span class="prism-btn__label">下载历史</span></button>
+        <button class="prism-btn prism-btn--${on ? "tinted" : "gray"} prism-btn--small" onclick="toggleMonitor(${c.id})"><span class="prism-btn__label">${on ? "监控中" : "监控"}</span></button>
+      </span>
+    </li>`;
+  }).join("") + `</ul>`;
+}
+function escapeHtml(s) { return (s || "").replace(/[&<>"]/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m])); }
+
+async function downloadChat(id, b) {
+  b.disabled = true;
+  try { await api("/api/tasks", { kind: "history", chat_id: id }); toast("已开始下载历史媒体"); loadTasks(); }
+  catch (e) { toast(e.message); }
+  finally { setTimeout(() => b.disabled = false, 1000); }
+}
+
+/* ---------- 任务队列 ---------- */
+function populateChatSelects() {
+  const opts = chats.map(c => `<option value="${c.id}">${escapeHtml(c.title) || ("ID " + c.id)}</option>`).join("");
+  const taskSel = $("taskChatSelect");
+  if (taskSel) {
+    const prev = taskSel.value;
+    taskSel.innerHTML = opts;
+    if ([...taskSel.options].some(o => o.value === prev)) taskSel.value = prev;
+  }
+  const histSel = $("historyChatFilter");
+  if (histSel) {
+    const prev = histSel.value || "0";
+    histSel.innerHTML = `<option value="0">全部聊天</option>` + opts;
+    histSel.value = [...histSel.options].some(o => o.value === prev) ? prev : "0";
+  }
+}
+function taskChatId() { const sel = $("taskChatSelect"); return sel && sel.value ? parseInt(sel.value, 10) : 0; }
+
+async function enqueueTask(kind, chatId) {
+  if (!chatId) return toast("请先选择聊天");
+  try {
+    await api("/api/tasks", { kind: kind, chat_id: chatId });
+    toast(kind === "history" ? "已开始下载历史媒体" : "已开始监控");
+    loadTasks();
+  } catch (e) { toast(e.message); }
+}
+async function cancelTaskById(id) {
+  try { await api(`/api/tasks/${id}/cancel`, {}); toast("已请求取消"); loadTasks(); } catch (e) { toast(e.message); }
+}
+async function retryTask(id) {
+  try { await api(`/api/tasks/${id}/retry`, {}); toast("已重新提交"); loadTasks(); } catch (e) { toast(e.message); }
+}
+
+const TASK_KIND_LABEL = { history: "历史下载", monitor: "实时监控" };
+const TASK_STATUS_LABEL = { queued: "排队中", running: "下载中", completed: "已完成", failed: "失败", canceled: "已取消" };
+const TASK_STATUS_TONE = { running: "accent", completed: "success", failed: "danger" };
+
+async function loadTasks() {
+  try { tasks = await api("/api/tasks"); renderTasks(); } catch (e) { /* not ready yet */ }
+}
+function renderTasks() {
+  const el = $("taskList");
+  if (!tasks.length) { el.innerHTML = `<div class="app-empty">暂无任务</div>`; return; }
+  el.innerHTML = `<ul class="prism-list">` + tasks.map(t => {
+    const tone = TASK_STATUS_TONE[t.status] || "";
+    const statusTag = `<span class="prism-tag"${tone ? ` data-tone="${tone}"` : ""}><span class="prism-tag__label">${TASK_STATUS_LABEL[t.status] || t.status}</span></span>`;
+    const kindTag = `<span class="prism-tag"><span class="prism-tag__label">${TASK_KIND_LABEL[t.kind] || t.kind}</span></span>`;
+    const done = (t.stats.downloaded || 0) + (t.stats.skipped || 0);
+    const total = t.stats.total || 0;
+    const pct = total ? Math.min(100, Math.round(done / total * 100)) : 0;
+    const progTone = t.status === "completed" ? "success" : t.status === "failed" ? "danger" : "";
+    let action = "";
+    if (t.status === "queued" || t.status === "running") {
+      action = `<button class="prism-btn prism-btn--gray prism-btn--small" onclick="cancelTaskById('${t.id}')"><span class="prism-btn__label">取消</span></button>`;
+    } else if (t.status === "failed" || t.status === "canceled") {
+      action = `<button class="prism-btn prism-btn--gray prism-btn--small" onclick="retryTask('${t.id}')"><span class="prism-btn__label">重试</span></button>`;
+    }
+    const errLine = t.status === "failed" && t.error ? `<div style="color:var(--color-danger);font:var(--text-footnote)">${escapeHtml(t.error)}</div>` : "";
+    return `<li class="prism-list__row">
+      <span class="prism-list__main">
+        <span class="prism-list__title">${escapeHtml(t.chat_title) || ("ID " + t.chat_id)}</span>
+        <span class="prism-list__subtitle">${kindTag} ${statusTag} · ${done}/${total} (${pct}%)</span>
+        <div class="prism-progress"${progTone ? ` data-tone="${progTone}"` : ""} style="margin-top:var(--s-2)"><div class="prism-progress__fill" style="width:${pct}%"></div></div>
+        ${errLine}
+      </span>
+      <span class="prism-list__trailing app-row-acts">${action}</span>
+    </li>`;
+  }).join("") + `</ul>`;
+}
+
+/* ---------- 下载历史 ---------- */
+function renderHistoryTypeSeg() {
+  $("historyTypeSeg").innerHTML = HISTORY_TYPES.map(t => {
+    const sel = t === historyFilters.type;
+    return `<button type="button" class="prism-segmented__segment${sel ? " prism-segmented__segment--selected" : ""}" onclick="setHistoryType('${t}')">
+      <span class="prism-segmented__label">${t || "全部"}</span></button>`;
+  }).join("");
+}
+function setHistoryType(t) { historyFilters.type = t; renderHistoryTypeSeg(); applyHistoryFilterChange(); }
+function onHistoryChatChange(v) { historyFilters.chat_id = parseInt(v, 10) || 0; applyHistoryFilterChange(); }
+function onHistoryStatusChange(v) { historyFilters.status = v; applyHistoryFilterChange(); }
+function onHistorySearch(v) {
+  clearTimeout(historySearchTimer);
+  historySearchTimer = setTimeout(() => { historyFilters.q = v.trim(); applyHistoryFilterChange(); }, 300);
+}
+function applyHistoryFilterChange() { loadHistory(historyFilters, 1); loadHistoryStats(historyFilters); }
+
+function buildHistoryQuery(filters, withPaging) {
+  const p = new URLSearchParams();
+  if (filters.type) p.set("type", filters.type);
+  if (filters.chat_id) p.set("chat_id", filters.chat_id);
+  if (filters.status) p.set("status", filters.status);
+  if (filters.q) p.set("q", filters.q);
+  if (filters.from) p.set("from", Math.floor(startOfDay(new Date(filters.from)).getTime() / 1000));
+  if (filters.to) p.set("to", Math.floor(endOfDay(new Date(filters.to)).getTime() / 1000));
+  if (withPaging) { p.set("page", historyPage); p.set("page_size", historyPageSize); }
+  return p.toString();
+}
+
+async function loadHistory(filters, page) {
+  filters = filters || historyFilters;
+  historyPage = page || historyPage || 1;
+  try {
+    const data = await api("/api/history?" + buildHistoryQuery(filters, true));
+    historyTotal = data.total || 0;
+    historyPageSize = data.page_size || historyPageSize;
+    renderHistory(data.items || []);
+    renderHistoryPagination();
+  } catch (e) { toast(e.message); }
+}
+
+const HISTORY_STATUS_LABEL = { downloading: "下载中", completed: "已完成", failed: "失败", skipped: "已跳过" };
+const HISTORY_STATUS_TONE = { downloading: "accent", completed: "success", failed: "danger" };
+
+function renderHistory(items) {
+  const el = $("historyList");
+  if (!items.length) { el.innerHTML = `<div class="app-empty">暂无记录</div>`; return; }
+  el.innerHTML = `<ul class="prism-list">` + items.map(r => {
+    const tone = HISTORY_STATUS_TONE[r.status] || "";
+    const statusTag = `<span class="prism-tag"${tone ? ` data-tone="${tone}"` : ""}><span class="prism-tag__label">${HISTORY_STATUS_LABEL[r.status] || r.status}</span></span>`;
+    const typeTag = `<span class="prism-tag"><span class="prism-tag__label">${escapeHtml(r.media_type)}</span></span>`;
+    const time = r.created_at ? new Date(r.created_at * 1000).toLocaleString() : "";
+    return `<li class="prism-list__row">
+      <span class="prism-list__main">
+        <span class="prism-list__title">${escapeHtml(r.file_name) || "(未命名)"}</span>
+        <span class="prism-list__subtitle">${typeTag} ${statusTag} · ${escapeHtml(r.chat_title) || ("ID " + r.chat_id)} · ${fmtSize(r.file_size)} · ${time}</span>
+      </span>
+    </li>`;
+  }).join("") + `</ul>`;
+}
+
+function renderHistoryPagination() {
+  const totalPages = Math.max(1, Math.ceil(historyTotal / (historyPageSize || 1)));
+  if (historyPage > totalPages) historyPage = totalPages;
+  $("historyPager").innerHTML = `
+    <button class="prism-btn prism-btn--gray prism-btn--small"${historyPage <= 1 ? " disabled" : ""} onclick="gotoHistoryPage(${historyPage - 1})"><span class="prism-btn__label">上一页</span></button>
+    <span class="app-muted" style="margin:0">第 ${historyPage} / ${totalPages} 页 · 共 ${historyTotal} 条</span>
+    <button class="prism-btn prism-btn--gray prism-btn--small"${historyPage >= totalPages ? " disabled" : ""} onclick="gotoHistoryPage(${historyPage + 1})"><span class="prism-btn__label">下一页</span></button>
+  `;
+}
+function gotoHistoryPage(p) { if (p < 1) return; loadHistory(historyFilters, p); }
+
+async function loadHistoryStats(filters) {
+  filters = filters || historyFilters;
+  try {
+    const data = await api("/api/history/stats?" + buildHistoryQuery(filters, false));
+    renderHistoryStats(data.by_type || []);
+  } catch (e) { /* 忽略，不影响主列表 */ }
+}
+function renderHistoryStats(stats) {
+  const el = $("historyStatsChart");
+  if (!stats.length) { el.innerHTML = `<div class="app-empty">暂无统计</div>`; return; }
+  const max = Math.max(1, ...stats.map(s => s.count));
+  el.innerHTML = `<div class="prism-barchart">` + stats.map(s => {
+    const pct = Math.round(s.count / max * 100);
+    return `<div class="prism-barchart__col">
+      <div class="prism-barchart__plot" style="--_h:120px">
+        <div class="prism-barchart__bar" style="height:${pct}%"><span class="prism-barchart__value">${s.count}</span></div>
+      </div>
+      <span class="prism-barchart__label">${escapeHtml(s.media_type)}</span>
+    </div>`;
+  }).join("") + `</div>`;
+}
+
+/* ---------- 下载历史 · 日期范围选择 ---------- */
+const HISTORY_WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
+function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+function ymd(d) { return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); }
+function startOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0); }
+function endOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59); }
+
+function toggleDatePicker(which) {
+  historyOpenPicker = historyOpenPicker === which ? null : which;
+  renderDatePickers();
+}
+function renderDatePickers() {
+  ["from", "to"].forEach(which => {
+    const box = $("historyPicker_" + which);
+    if (historyOpenPicker !== which) { box.classList.add("hidden"); box.innerHTML = ""; return; }
+    box.classList.remove("hidden");
+    const sel = historyFilters[which];
+    const view = historyView[which] || (() => { const d = sel ? new Date(sel) : new Date(); return { y: d.getFullYear(), m: d.getMonth() }; })();
+    box.innerHTML = renderCalendar(view.y, view.m, sel, which);
+  });
+}
+function renderCalendar(year, month, selected, which) {
+  const first = new Date(year, month, 1);
+  const startOffset = first.getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const today = new Date();
+  let cells = "";
+  for (let i = 0; i < startOffset; i++) cells += `<span class="prism-datepicker__day prism-datepicker__day--outside"></span>`;
+  for (let d = 1; d <= daysInMonth; d++) {
+    const cur = new Date(year, month, d);
+    const isToday = cur.toDateString() === today.toDateString();
+    const isSelected = selected && cur.toDateString() === new Date(selected).toDateString();
+    cells += `<button type="button" class="prism-datepicker__day${isToday ? " prism-datepicker__day--today" : ""}${isSelected ? " prism-datepicker__day--selected" : ""}" onclick="pickHistoryDate('${which}', ${year}, ${month}, ${d})">${d}</button>`;
+  }
+  return `<div class="prism-datepicker">
+    <div class="prism-datepicker__header">
+      <button type="button" class="prism-datepicker__nav" onclick="navHistoryMonth('${which}', ${year}, ${month}, -1)">‹</button>
+      <span class="prism-datepicker__title">${year} 年 ${month + 1} 月</span>
+      <button type="button" class="prism-datepicker__nav" onclick="navHistoryMonth('${which}', ${year}, ${month}, 1)">›</button>
+    </div>
+    <div class="prism-datepicker__weekdays">${HISTORY_WEEKDAYS.map(w => `<span class="prism-datepicker__weekday">${w}</span>`).join("")}</div>
+    <div class="prism-datepicker__grid">${cells}</div>
+  </div>`;
+}
+function navHistoryMonth(which, year, month, delta) {
+  let m = month + delta, y = year;
+  if (m < 0) { m = 11; y--; } else if (m > 11) { m = 0; y++; }
+  historyView[which] = { y, m };
+  renderDatePickers();
+}
+function pickHistoryDate(which, year, month, day) {
+  historyFilters[which] = new Date(year, month, day).getTime();
+  historyView[which] = null;
+  historyOpenPicker = null;
+  renderDatePickers();
+  renderDateTriggerLabels();
+  applyHistoryFilterChange();
+}
+function clearHistoryDates() {
+  historyFilters.from = 0; historyFilters.to = 0;
+  historyView = { from: null, to: null };
+  historyOpenPicker = null;
+  renderDatePickers();
+  renderDateTriggerLabels();
+  applyHistoryFilterChange();
+}
+function renderDateTriggerLabels() {
+  $("historyFromTrigger").querySelector(".prism-btn__label").textContent = historyFilters.from ? ymd(new Date(historyFilters.from)) : "起始日期";
+  $("historyToTrigger").querySelector(".prism-btn__label").textContent = historyFilters.to ? ymd(new Date(historyFilters.to)) : "结束日期";
+}
+
+/* ---------- 日志 ---------- */
+function appendLog(e) {
+  const box = $("log");
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  const div = document.createElement("div");
+  div.innerHTML = `<span class="ts">${escapeHtml(e.time)}</span><span class="lv ${e.level}">${escapeHtml(e.level)}</span> ${escapeHtml(e.msg)}`;
+  box.appendChild(div);
+  while (box.childElementCount > 400) box.removeChild(box.firstChild);
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+/* ---------- SSE ---------- */
+function connect() {
+  const es = new EventSource("/api/events");
+  es.addEventListener("state", (ev) => { try { applyState(JSON.parse(ev.data)); } catch (e) {} });
+  es.addEventListener("log", (ev) => { try { appendLog(JSON.parse(ev.data)); } catch (e) {} });
+  es.addEventListener("task", () => { loadTasks(); });
+  es.onerror = () => {
+    // 浏览器仅在连接级中断时自动重连；服务端返回非 2xx / 重启会使其进入 CLOSED 不再重连，
+    // 此时手动重建，避免状态/日志/进度静默冻结。
+    if (es.readyState === EventSource.CLOSED) {
+      es.close();
+      setTimeout(connect, 2000);
+    }
+  };
+}
+renderHistoryTypeSeg();
+connect();
+</script>
+</body>
+</html>

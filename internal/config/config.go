@@ -34,10 +34,22 @@ const (
 	DefaultRequestsPerSecond = 1.0 // 1 request per second
 	DefaultBurstSize         = 2
 
+	// 默认队列配置
+	DefaultMaxConcurrentTasks = 1
+
+	// 默认存储配置
+	DefaultStorePath = "./tg-down.db"
+
 	// 进制转换基数
 	DecimalBase  = 10
 	FloatBitSize = 64
 )
+
+// validChunkSizes 列出合法的分片大小 (KB)：均为 4 的倍数且能整除 1024，
+// 满足 Telegram upload.getFile 对 limit 的约束。
+var validChunkSizes = map[int]bool{
+	4: true, 8: true, 16: true, 32: true, 64: true, 128: true, 256: true, 512: true,
+}
 
 // Config 应用配置结构
 type Config struct {
@@ -48,6 +60,8 @@ type Config struct {
 	Session   SessionConfig   `yaml:"session"`
 	Retry     RetryConfig     `yaml:"retry"`
 	RateLimit RateLimitConfig `yaml:"rate_limit"`
+	Queue     QueueConfig     `yaml:"queue"`
+	Store     StoreConfig     `yaml:"store"`
 }
 
 // APIConfig Telegram API配置
@@ -60,11 +74,14 @@ type APIConfig struct {
 // DownloadConfig 下载配置
 type DownloadConfig struct {
 	Path          string `yaml:"path"`
-	MaxConcurrent int    `yaml:"max_concurrent"`
-	BatchSize     int    `yaml:"batch_size"`
-	ChunkSize     int    `yaml:"chunk_size"`  // 分块大小 (KB)
-	MaxWorkers    int    `yaml:"max_workers"` // 并行下载工作线程数
-	UseChunked    bool   `yaml:"use_chunked"` // 是否启用分块下载
+	MaxConcurrent int    `yaml:"max_concurrent"` // 同时下载的文件数
+	BatchSize     int    `yaml:"batch_size"`     // 每批拉取的历史消息数
+	// Deprecated: 切换到 TDLib 引擎后失效。TDLib 自管分片大小与单文件并行度。保留仅为向后兼容。
+	ChunkSize int `yaml:"chunk_size"`
+	// Deprecated: 切换到 TDLib 引擎后失效。TDLib 自管单文件下载并行度。保留仅为向后兼容。
+	MaxWorkers int `yaml:"max_workers"`
+	// DisableClassifyByType 为 true 时关闭按媒体类型归档（默认归档开启）
+	DisableClassifyByType bool `yaml:"disable_classify_by_type"`
 }
 
 // RetryConfig 重试配置
@@ -75,6 +92,8 @@ type RetryConfig struct {
 }
 
 // RateLimitConfig 速率限制配置
+//
+// Deprecated: 切换到 TDLib 引擎后失效。TDLib 内部处理 flood-wait 与限流。保留仅为向后兼容。
 type RateLimitConfig struct {
 	RequestsPerSecond float64 `yaml:"requests_per_second"` // 每秒请求数
 	BurstSize         int     `yaml:"burst_size"`          // 突发大小
@@ -92,11 +111,30 @@ type LogConfig struct {
 
 // SessionConfig 会话配置
 type SessionConfig struct {
-	Dir string `yaml:"dir"`
+	Dir string `yaml:"dir"` // TDLib 数据库/会话根目录（实际数据库位于 <dir>/tdlib）
 }
 
-// LoadConfig 加载配置文件
+// QueueConfig 任务队列配置
+type QueueConfig struct {
+	MaxConcurrentTasks int `yaml:"max_concurrent_tasks"` // 同时运行的历史下载任务数（监控任务不占用此配额，独立运行）
+}
+
+// StoreConfig 持久化存储配置
+type StoreConfig struct {
+	Path string `yaml:"path"` // SQLite 数据库文件路径
+}
+
+// LoadConfig 加载配置文件（要求 API 凭据齐全，用于 CLI 模式）
 func LoadConfig() (*Config, error) {
+	return load(true)
+}
+
+// LoadConfigForWeb 加载配置但不强制 API 凭据；Web 模式允许在页面内补填凭据后再连接
+func LoadConfigForWeb() (*Config, error) {
+	return load(false)
+}
+
+func load(requireAPI bool) (*Config, error) {
 	// 尝试加载 .env 文件
 	_ = godotenv.Load()
 
@@ -114,11 +152,18 @@ func LoadConfig() (*Config, error) {
 	setDefaults(config)
 
 	// 验证必要配置
-	if err := validateConfig(config); err != nil {
-		return nil, err
+	if requireAPI {
+		if err := validateConfig(config); err != nil {
+			return nil, err
+		}
 	}
 
 	return config, nil
+}
+
+// HasAPICredentials 判断 API 凭据（id/hash/phone）是否齐全
+func (c *Config) HasAPICredentials() bool {
+	return c.API.ID != 0 && c.API.Hash != "" && c.API.Phone != ""
 }
 
 // loadFromYAML 从YAML文件加载配置
@@ -148,6 +193,8 @@ func loadFromEnv(config *Config) {
 	loadSessionConfig(config)
 	loadRetryConfig(config)
 	loadRateLimitConfig(config)
+	loadQueueConfig(config)
+	loadStoreConfig(config)
 }
 
 // loadAPIConfig 加载API配置
@@ -194,12 +241,6 @@ func loadDownloadConfig(config *Config) {
 	if maxWorkers := os.Getenv("MAX_WORKERS"); maxWorkers != "" {
 		if workers, err := strconv.Atoi(maxWorkers); err == nil {
 			config.Download.MaxWorkers = workers
-		}
-	}
-
-	if useChunked := os.Getenv("USE_CHUNKED"); useChunked != "" {
-		if chunked, err := strconv.ParseBool(useChunked); err == nil {
-			config.Download.UseChunked = chunked
 		}
 	}
 }
@@ -263,24 +304,40 @@ func loadRateLimitConfig(config *Config) {
 	}
 }
 
+// loadQueueConfig 加载队列配置
+func loadQueueConfig(config *Config) {
+	if maxConcurrentTasks := os.Getenv("MAX_CONCURRENT_TASKS"); maxConcurrentTasks != "" {
+		if tasks, err := strconv.Atoi(maxConcurrentTasks); err == nil {
+			config.Queue.MaxConcurrentTasks = tasks
+		}
+	}
+}
+
+// loadStoreConfig 加载存储配置
+func loadStoreConfig(config *Config) {
+	if storePath := os.Getenv("STORE_PATH"); storePath != "" {
+		config.Store.Path = storePath
+	}
+}
+
 // setDefaults 设置默认值
 func setDefaults(config *Config) {
 	if config.Download.Path == "" {
 		config.Download.Path = DefaultDownloadPath
 	}
-	if config.Download.MaxConcurrent == 0 {
+	if config.Download.MaxConcurrent <= 0 {
 		config.Download.MaxConcurrent = DefaultMaxConcurrent
 	}
 	if config.Download.BatchSize == 0 {
 		config.Download.BatchSize = DefaultBatchSize
 	}
-	if config.Download.ChunkSize == 0 {
+	// chunk_size 必须是合法的 Telegram 分片大小：4KB 的倍数且能整除 1MB，否则回退默认值
+	if !validChunkSizes[config.Download.ChunkSize] {
 		config.Download.ChunkSize = DefaultChunkSize
 	}
 	if config.Download.MaxWorkers == 0 {
 		config.Download.MaxWorkers = DefaultMaxWorkers
 	}
-	// UseChunked 默认为 false，让用户显式启用
 
 	if config.Retry.MaxRetries == 0 {
 		config.Retry.MaxRetries = DefaultMaxRetries
@@ -304,6 +361,13 @@ func setDefaults(config *Config) {
 	}
 	if config.Session.Dir == "" {
 		config.Session.Dir = DefaultSessionDir
+	}
+
+	if config.Queue.MaxConcurrentTasks <= 0 {
+		config.Queue.MaxConcurrentTasks = DefaultMaxConcurrentTasks
+	}
+	if config.Store.Path == "" {
+		config.Store.Path = DefaultStorePath
 	}
 }
 

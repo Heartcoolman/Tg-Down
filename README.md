@@ -8,36 +8,51 @@
 1. 访问 [https://my.telegram.org](https://my.telegram.org) 并登录
 2. 创建新应用，获取 `api_id` 和 `api_hash`
 
+> ⚙️ 从源码运行前需先安装官方 TDLib 引擎：`make tdlib`（详见下文「方式二 → 3. 安装 TDLib」）。预编译版本已内置，可跳过。
+
 ### 第二步：配置和运行
 ```bash
 # 1. 复制配置文件
 cp config.yaml.example config.yaml
 
 # 2. 编辑config.yaml，填入你的API信息
-# 3. 运行程序
-go run cmd/main.go
+# 3. 编译并运行（make build 自动设置 CGo/TDLib 环境）
+make build && ./tg-down
 
 # 4. 首次运行需要输入验证码登录
 # 5. 后续运行会自动使用保存的会话，无需重复登录
 ```
 
-### 演示脚本
-```bash
-# Linux/macOS
-./demo.sh
+## 🌐 Web 管理端（Apple 风格）
 
-# Windows
-demo.bat
+除命令行外，可启动内置的本地 Web 管理界面（单二进制内嵌，无需额外依赖）：
+
+```bash
+./tg-down --web            # 默认监听 127.0.0.1:8080
+./tg-down --web :9000      # 自定义端口
+./tg-down --web 0.0.0.0:8080  # 局域网访问（无鉴权，请确保网络可信）
 ```
+
+浏览器打开 `http://127.0.0.1:8080`，功能：
+- **网页登录**：在页面输入验证码 / 两步验证密码，无需终端交互；
+- **聊天浏览**：分页加载全部聊天（含归档），按名称搜索；
+- **一键下载**：选择群组/频道触发历史媒体多线程下载；
+- **实时监控**：对任意聊天开关监控，新媒体自动下载；
+- **实时进度**：通过 SSE 推送下载统计、进度条与运行日志；
+- 默认仅监听 `127.0.0.1`，浅色/深色自动适配。
 
 ## 功能特性
 
+- 🌐 **Web 管理端**: 内置 Apple 风格本地网页，登录/浏览/下载/监控/实时日志一站式管理
+- 🚀 **官方 TDLib 引擎**: 下载直接走 Telegram 官方 TDLib，原生支持断点续传、CDN 加速、动态分片与优先级调度，自动处理 DC 迁移
+- 🧵 **多文件并发**: 同时下载多个文件（`max_concurrent` 控制并发数）
 - 🚀 **实时监控**: 自动监控群聊新消息并下载媒体文件
-- 📚 **历史下载**: 批量下载群聊历史消息中的媒体文件
-- 🔄 **并发下载**: 支持多线程并发下载，提高下载效率
+- 📚 **历史下载**: 批量下载群聊（含频道/超级群组）历史消息中的媒体文件
+- 🗂️ **下载任务队列**: 支持依次提交多个聊天的下载任务排队执行，Web 端任务列表可取消/重试
 - 📊 **下载统计**: 实时显示下载进度和统计信息
+- 🕘 **下载历史记录**: 按文件持久化下载历史，Web 端支持按媒体类型/聊天/状态/时间筛选、搜索与分页浏览
 - 🎯 **智能去重**: 自动跳过已下载的文件
-- 📁 **分类存储**: 按聊天分组存储下载的文件
+- 📁 **分类存储**: 默认按媒体类型在各聊天目录下分子文件夹归档存储，可通过 `disable_classify_by_type` 关闭并恢复旧版扁平布局
 - 🔐 **持久登录**: 首次登录后保存会话，无需重复认证
 - ⚙️ **灵活配置**: 支持YAML配置文件和环境变量配置
 
@@ -114,25 +129,35 @@ export API_HASH=你的API_HASH
 export PHONE=你的手机号
 ```
 
-### 3. 安装依赖
+### 3. 安装 TDLib（首次必需）
+
+本项目下载引擎基于官方 [TDLib](https://github.com/tdlib/td)，通过 CGo 绑定 `libtdjson`，需先构建安装 TDLib（脚本已锁定与 Go 绑定匹配的 commit）：
+
+```bash
+# 依赖: cmake、gperf、OpenSSL（macOS: brew install cmake gperf openssl@3；Linux: apt 安装 cmake gperf libssl-dev g++）
+make tdlib   # = bash scripts/install-tdlib.sh，默认装到 ~/.tdlib，首次约 30-60 分钟
+```
+
+> 自定义安装位置：`TDLIB_PREFIX=/your/path make tdlib`。
+
+### 4. 安装依赖并编译运行
 
 ```bash
 go mod download
-```
 
-### 4. 编译运行
-
-```bash
-# 编译
-go build -o tg-down cmd/main.go
+# 编译（Makefile 自动设置 CGo 环境变量指向 ~/.tdlib 与 openssl@3）
+make build
 
 # 运行
 ./tg-down
 ```
 
-或者直接运行：
+手动设置 CGo 环境编译（不经 Makefile）：
 ```bash
-go run cmd/main.go
+export CGO_CFLAGS="-I$HOME/.tdlib/include"
+export CGO_LDFLAGS="-L$HOME/.tdlib/lib -Wl,-rpath,$HOME/.tdlib/lib"
+# macOS 还需追加 openssl@3: -I/-L $(brew --prefix openssl@3)/{include,lib}
+go build -o tg-down ./cmd && ./tg-down
 ```
 
 ## 使用说明
@@ -164,9 +189,11 @@ go run cmd/main.go
 | `api.hash` | Telegram API Hash | 必填 |
 | `api.phone` | 手机号 | 必填 |
 | `download.path` | 下载路径 | `./downloads` |
-| `download.max_concurrent` | 最大并发下载数 | `5` |
-| `download.batch_size` | 批量处理大小 | `100` |
-| `session.dir` | 会话文件保存目录 | `./sessions` |
+| `download.max_concurrent` | 同时下载的文件数 | `5` |
+| `download.batch_size` | 每批拉取的历史消息数 | `100` |
+| `download.chunk_size` | ~~单文件分片大小~~（已废弃：TDLib 自管分片，配置无效） | `512` |
+| `download.max_workers` | ~~单文件并行线程数~~（已废弃：TDLib 自管单文件并行度） | `4` |
+| `session.dir` | TDLib 数据库/会话根目录（实际位于 `<dir>/tdlib`） | `./sessions` |
 | `chat.target_id` | 目标群组ID（可选） | `0` |
 | `log.level` | 日志级别 | `info` |
 
@@ -194,13 +221,18 @@ tg-down/
 │   └── dependabot.yml      # Dependabot配置
 ├── cmd/
 │   └── main.go              # 主程序入口
+├── scripts/
+│   └── install-tdlib.sh     # 构建安装 TDLib(libtdjson)
 ├── internal/
 │   ├── config/              # 配置管理
 │   ├── logger/              # 日志记录
-│   ├── session/             # 会话管理
-│   ├── downloader/          # 下载器
-│   └── telegram/            # Telegram客户端
-├── sessions/                # 会话文件目录
+│   ├── downloader/          # 下载并发/统计/去重
+│   ├── retry/               # 重试
+│   ├── store/               # SQLite 持久化（任务/历史）
+│   ├── queue/               # 任务队列管理
+│   ├── telegram/            # TDLib 客户端封装（认证/枚举/下载/监控）
+│   └── web/                 # Apple 风格 Web 管理端
+├── sessions/                # TDLib 数据库/会话目录
 ├── downloads/               # 下载目录
 ├── config.yaml.example     # 配置文件模板
 ├── .env.example            # 环境变量模板
@@ -212,10 +244,12 @@ tg-down/
 ### 主要模块
 
 - **config**: 配置文件和环境变量管理
-- **logger**: 分级日志记录
-- **session**: 持久登录会话管理
-- **downloader**: 并发媒体文件下载器
-- **telegram**: Telegram API客户端封装
+- **logger**: 分级日志记录（含 SSE 广播 hook）
+- **downloader**: 并发媒体文件下载（信号量并发、去重、统计、路径安全）
+- **store**: SQLite 持久化任务与下载历史（`modernc.org/sqlite`，纯 Go 无 CGo 依赖）
+- **queue**: 多任务下载队列管理（history 任务排队执行，monitor 任务独立运行不占配额）
+- **telegram**: 官方 TDLib 客户端封装（认证、聊天枚举、历史/实时下载）；会话由 TDLib 数据库持久化
+- **web**: Apple 风格本地 Web 管理端
 
 ### CI/CD 流水线
 
@@ -224,7 +258,8 @@ tg-down/
 #### 🔄 持续集成 (CI)
 - **代码质量检查**: 使用golangci-lint进行代码规范检查
 - **自动化测试**: 运行单元测试和集成测试
-- **安全扫描**: 使用Gosec进行安全漏洞扫描
+- **安全扫描**: Gosec 已集成进 golangci-lint 统一执行
+- **TDLib 构建缓存**: CI 通过 `.github/actions/setup-tdlib` 复合动作缓存 libtdjson，避免每次重建
 - **依赖管理**: 自动提交Go依赖信息到GitHub依赖图
 
 #### 📦 自动化发布 (CD)
@@ -232,17 +267,15 @@ tg-down/
   - `breaking`/`major` 关键词 → 主版本号提升 (v1.0.0 → v2.0.0)
   - `feat`/`feature`/`minor` 关键词 → 次版本号提升 (v1.0.0 → v1.1.0)
   - 其他提交 → 补丁版本号提升 (v1.0.0 → v1.0.1)
-- **完整打包**: 自动创建包含所有依赖的完整发布包
-  - Windows: `tg-down-windows-amd64.zip` (包含 .exe、启动脚本、配置文件)
-  - Linux: `tg-down-linux-amd64.tar.gz` (包含可执行文件、启动脚本、配置文件)
-  - macOS: `tg-down-macos-amd64.tar.gz` (包含可执行文件、启动脚本、配置文件)
+- **原生打包**: 因 CGo+TDLib 无法交叉编译，按平台原生构建（各 runner 自建 libtdjson）：
+  - Linux x86_64: `tg-down-linux-amd64.tar.gz`
+  - macOS Apple Silicon: `tg-down-darwin-arm64.tar.gz`
+  - Windows 及其他交叉目标暂不提供，可在对应平台 `make tdlib && make build` 自行构建
 - **开箱即用**: 每个发布包都包含：
-  - 编译好的可执行文件
+  - 编译好的可执行文件（libtdjson 已静态链入；运行仍需系统 OpenSSL）
   - 预配置的 config.yaml 文件
-  - 一键启动脚本 (start.bat/start.sh)
-  - 详细的配置说明文档
+  - 一键启动脚本 (start.sh)
   - 许可证文件
-- **多平台构建**: 支持Linux、Windows、macOS (AMD64/ARM64)
 - **校验和生成**: 为所有构建产物生成SHA256校验和
 
 #### 🚀 一键发布流程
@@ -270,8 +303,8 @@ tg-down/
    # 运行测试
    go test ./...
    
-   # 本地构建
-   go build -o tg-down cmd/main.go
+   # 本地构建（需先 make tdlib 安装 TDLib）
+   make build
    ```
 
 2. **提交代码**:
@@ -358,6 +391,22 @@ tg-down/
 ---
 
 ## 📋 更新日志
+
+### v3.0.0 (2026-07-01)
+- 🗂️ **下载任务队列**：新增 `internal/queue`，Web 端可依次提交多个聊天的下载任务排队执行（受 `queue.max_concurrent_tasks` 限制），支持取消/重试，取代原单任务模型
+- 💾 **SQLite 持久化**：新增 `internal/store`（基于纯 Go 的 `modernc.org/sqlite`，无 CGo 依赖），任务与下载历史落库持久化
+- 🕘 **下载历史记录**：按文件持久化下载历史，Web 端支持按媒体类型/聊天/状态/时间筛选、搜索与分页浏览
+- 📁 **归档目录调整（默认开启）**：下载文件默认按媒体类型在聊天目录下分子文件夹存放，可通过 `disable_classify_by_type: true` 恢复旧版扁平布局
+- 🔌 **Web API 变更（破坏性）**：新增 `/api/tasks*`、`/api/history*`，取代原 `/api/download*`、`/api/monitor`
+- ⚠️ **行为变更**：旧版扁平目录下已下载的文件，在新版分类目录下会被判定为未下载并重新下载一次（暂未提供迁移工具）
+
+### v2.0.0 (2026-07-01)
+- 🔄 **下载引擎切换为官方 TDLib**：经 `github.com/zelenin/go-tdlib`（CGo 绑定 libtdjson）直连官方引擎，原生获得断点续传、CDN 加速、动态分片与优先级调度
+- 🧹 **移除 gotd 依赖**：删除自研 `session`/`floodwait`/`ratelimit` 中间件（认证由 TDLib 数据库持久化，限流/flood-wait 由 TDLib 内部处理）
+- 🧱 **构建变更（破坏性）**：首次需 `make tdlib` 构建安装 TDLib；`make build` 自动设置 CGo 环境
+- 📦 **发布改为原生构建**：CGo 无法交叉编译，仅提供 linux-amd64 与 darwin-arm64；Windows/交叉目标需本地自建
+- ⚠️ **配置变更**：`download.chunk_size`/`max_workers`/`rate_limit.*` 失效（TDLib 自管），保留仅为向后兼容
+- 🎞️ **媒体类型扩展**：历史下载新增视频/动图/音频/语音
 
 ### v1.3.0 (2025-07-29)
 - 🚀 **完全自动化发布**：实现 git push 后自动打包发布的完整流程

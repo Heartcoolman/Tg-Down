@@ -1,0 +1,139 @@
+// Package store 提供基于 SQLite 的任务与下载历史持久化能力，不依赖 web/telegram/queue。
+package store
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	_ "modernc.org/sqlite" // 注册 database/sql 驱动 "sqlite"
+)
+
+const (
+	// driverName 是 modernc.org/sqlite 注册的 database/sql 驱动名
+	driverName = "sqlite"
+	// busyTimeoutMillis 是连接遇锁等待重试的超时时间（毫秒）
+	busyTimeoutMillis = 5000
+	// maxOpenConnections 限制并发连接数：WAL 模式下多个连接可并发读，
+	// 写操作由 SQLite 自身的单写者锁 + busy_timeout 串行化重试，
+	// 无需把整个连接池压到 1 个连接，否则会牺牲历史查询等只读并发能力。
+	maxOpenConnections = 4
+	// inMemoryDSN 是 SQLite 匿名内存库路径，每个新连接默认互不可见，
+	// 因此该场景下必须强制单连接，否则连接池新开的连接会看到空库。
+	inMemoryDSN = ":memory:"
+	// directoryPermission 是创建数据库父目录时使用的权限。
+	directoryPermission = 0750
+)
+
+// schema 定义全部建表/索引语句，单一 schema 版本，无迁移框架
+const schema = `
+CREATE TABLE IF NOT EXISTS tasks (
+  id              TEXT PRIMARY KEY,
+  kind            TEXT NOT NULL,
+  chat_id         INTEGER NOT NULL,
+  chat_title      TEXT,
+  status          TEXT NOT NULL,
+  created_at      INTEGER NOT NULL,
+  started_at      INTEGER,
+  finished_at     INTEGER,
+  error           TEXT,
+  total           INTEGER DEFAULT 0,
+  downloaded      INTEGER DEFAULT 0,
+  failed          INTEGER DEFAULT 0,
+  skipped         INTEGER DEFAULT 0,
+  total_size      INTEGER DEFAULT 0,
+  downloaded_size INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status     ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS history (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id     TEXT,
+  chat_id     INTEGER NOT NULL,
+  chat_title  TEXT,
+  message_id  INTEGER NOT NULL,
+  media_type  TEXT NOT NULL,
+  file_name   TEXT NOT NULL,
+  file_path   TEXT NOT NULL,
+  file_size   INTEGER NOT NULL,
+  mime_type   TEXT,
+  status      TEXT NOT NULL,
+  reason      TEXT,
+  created_at  INTEGER NOT NULL,
+  finished_at INTEGER,
+  UNIQUE(chat_id, message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_history_media_type ON history(media_type);
+CREATE INDEX IF NOT EXISTS idx_history_chat_id    ON history(chat_id);
+CREATE INDEX IF NOT EXISTS idx_history_status     ON history(status);
+CREATE INDEX IF NOT EXISTS idx_history_created_at ON history(created_at DESC);
+`
+
+// Store 是基于 SQLite 的持久化句柄
+type Store struct {
+	db *sql.DB
+}
+
+// Open 打开（或创建）指定路径的 SQLite 数据库并应用 schema。
+//
+// 连接池策略：通过 DSN 的 _pragma 参数开启 WAL + busy_timeout(5000ms)，
+// WAL 模式允许多个连接并发读、单个连接写，写写冲突时由 SQLite 按
+// busy_timeout 自动等待重试而非立即返回 "database is locked"；
+// 因此 MaxOpenConns 设为较小的并发值（maxOpenConnections）而非 1，
+// 以保留历史查询等只读路径的并发能力。匿名内存库（":memory:"）
+// 是例外：每个新连接看到的是独立的空库，必须强制单连接，否则连接池
+// 复用机制会导致数据“凭空丢失”。
+func Open(path string) (*Store, error) {
+	if err := ensureDatabaseDir(path); err != nil {
+		return nil, err
+	}
+
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)", path, busyTimeoutMillis)
+
+	db, err := sql.Open(driverName, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("打开数据库失败: %w", err)
+	}
+
+	if path == inMemoryDSN {
+		db.SetMaxOpenConns(1)
+	} else {
+		db.SetMaxOpenConns(maxOpenConnections)
+	}
+
+	if _, err := db.ExecContext(context.Background(), schema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("初始化 schema 失败: %w", err)
+	}
+
+	return &Store{db: db}, nil
+}
+
+func ensureDatabaseDir(path string) error {
+	if path == "" || path == inMemoryDSN {
+		return nil
+	}
+
+	dir := filepath.Dir(path)
+	if dir == "." || dir == "" {
+		return nil
+	}
+
+	if err := os.MkdirAll(dir, directoryPermission); err != nil {
+		return fmt.Errorf("创建数据库目录失败: %w", err)
+	}
+	return nil
+}
+
+// Close 关闭数据库连接
+func (s *Store) Close() error {
+	return s.db.Close()
+}
+
+// execContext 是内部统一的写操作封装，便于未来扩展（如统一错误包装）
+func (s *Store) execContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return s.db.ExecContext(ctx, query, args...)
+}
