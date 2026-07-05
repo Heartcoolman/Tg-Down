@@ -41,18 +41,18 @@ linters:
             - '!**/*_test.go'
           allow:
             - $gostd
-            - github.com/gotd/td
+            - github.com/zelenin/go-tdlib/client
             - github.com/joho/godotenv
             - gopkg.in/yaml.v3
-            - golang.org/x/time/rate
+            - modernc.org/sqlite
             - tg-down/internal/config
             - tg-down/internal/logger
             - tg-down/internal/telegram
             - tg-down/internal/downloader
-            - tg-down/internal/session
-            - tg-down/internal/middleware/floodwait
-            - tg-down/internal/middleware/ratelimit
+            - tg-down/internal/web
             - tg-down/internal/retry
+            - tg-down/internal/store
+            - tg-down/internal/queue
     dupl:
       threshold: 100
     goconst:
@@ -109,19 +109,8 @@ linters:
           - mnd
         path: _test\.go
       - linters:
-          - gocyclo
-          - mnd
-          - revive
-        path: cmd/test-optimizations/
-      - linters:
           - gochecknoinits
         path: cmd/
-      - linters:
-          - noctx
-        path: cmd/test-connection/
-      - linters:
-          - unused
-        text: is unused
       - linters:
           - unparam
         text: parameter .* seems to be unused
@@ -129,7 +118,6 @@ linters:
       - .*\.pb\.go$
       - .*_test.go
       - vendor
-      - cmd/test-optimizations
       - third_party$
       - builtin$
       - examples$
@@ -150,7 +138,6 @@ formatters:
       - .*\.pb\.go$
       - .*_test.go
       - vendor
-      - cmd/test-optimizations
       - third_party$
       - builtin$
       - examples$

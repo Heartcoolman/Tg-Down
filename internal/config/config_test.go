@@ -94,6 +94,32 @@ func TestLoadConfigWithDefaults(t *testing.T) {
 	if config.Session.Dir != DefaultSessionDir {
 		t.Errorf("Expected default session dir '%s', got %s", DefaultSessionDir, config.Session.Dir)
 	}
+	if config.Queue.MaxConcurrentTasks != DefaultMaxConcurrentTasks {
+		t.Errorf("Expected default max concurrent tasks %d, got %d", DefaultMaxConcurrentTasks, config.Queue.MaxConcurrentTasks)
+	}
+	if config.Store.Path != DefaultStorePath {
+		t.Errorf("Expected default store path '%s', got %s", DefaultStorePath, config.Store.Path)
+	}
+}
+
+func TestLoadConfigFallsBackForInvalidConcurrency(t *testing.T) {
+	t.Setenv("API_ID", "12345")
+	t.Setenv("API_HASH", TestAPIHash)
+	t.Setenv("PHONE", TestPhone)
+	t.Setenv("MAX_CONCURRENT_DOWNLOADS", "-1")
+	t.Setenv("MAX_CONCURRENT_TASKS", "-2")
+
+	config, err := LoadConfig()
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	if config.Download.MaxConcurrent != DefaultMaxConcurrent {
+		t.Errorf("Expected fallback max concurrent %d, got %d", DefaultMaxConcurrent, config.Download.MaxConcurrent)
+	}
+	if config.Queue.MaxConcurrentTasks != DefaultMaxConcurrentTasks {
+		t.Errorf("Expected fallback max concurrent tasks %d, got %d", DefaultMaxConcurrentTasks, config.Queue.MaxConcurrentTasks)
+	}
 }
 
 func TestLoadConfigMissingRequired(t *testing.T) {

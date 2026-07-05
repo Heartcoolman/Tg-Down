@@ -11,327 +11,101 @@ env:
   GO_VERSION: '1.25'
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
-    name: Create Release
+  # CGo + TDLib 无法交叉编译，故按平台原生构建（仅 linux-amd64 与 darwin-arm64）。
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            name: linux-amd64
+          - runner: macos-14
+            name: darwin-arm64
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Run tests
-        run: go test -v ./...
+      - name: Setup TDLib
+        uses: ./.github/actions/setup-tdlib
 
-      - name: Create release directories
-        run: |
-          mkdir -p release/windows
-          mkdir -p release/linux
-          mkdir -p release/macos
+      - name: Test
+        run: go test ./...
 
-      - name: Build for multiple platforms
+      - name: Build
         run: |
-          # Windows AMD64
-          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o release/windows/tg-down.exe cmd/main.go
-          
-          # Linux AMD64
-          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o release/linux/tg-down cmd/main.go
-          
-          # Linux ARM64
-          GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o tg-down-linux-arm64 cmd/main.go
-          
-          # macOS AMD64
-          GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o release/macos/tg-down cmd/main.go
-          
-          # macOS ARM64 (Apple Silicon)
-          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o tg-down-darwin-arm64 cmd/main.go
+          mkdir -p dist/pkg
+          go build -ldflags="-s -w" -o dist/pkg/tg-down ./cmd
 
-      - name: Create Windows package
+      - name: Assemble package
         run: |
-          # 复制必要文件到 Windows 包
-          cp config.yaml.example release/windows/config.yaml
-          cp .env.example release/windows/.env.example
-          cp LICENSE release/windows/
-          
-          # 创建 Windows 启动脚本
-          cat > release/windows/start.bat << 'EOF'
-          @echo off
-          chcp 65001 > nul
-          title Telegram媒体下载器
-          
-          echo ========================================
-          echo    Telegram群聊媒体下载器 v${GITHUB_REF#refs/tags/}
-          echo ========================================
-          echo.
-          
-          REM 检查配置文件
-          if not exist "config.yaml" (
-              echo 首次运行，正在创建配置文件...
-              echo 请编辑 config.yaml 文件，填入您的 Telegram API 信息
-              echo.
-              echo 配置完成后，再次运行此脚本即可开始使用
-              echo.
-              pause
-              exit /b 1
-          )
-          
-          REM 创建必要目录
-          if not exist "downloads" mkdir downloads
-          if not exist "sessions" mkdir sessions
-          
-          echo 正在启动程序...
-          echo.
-          tg-down.exe
-          
-          if errorlevel 1 (
-              echo.
-              echo 程序运行出错，请检查配置文件
-              pause
-          )
-          EOF
-          
-          # 创建配置说明文件
-          cat > release/windows/配置说明.txt << 'EOF'
-          Telegram媒体下载器 - 配置说明
-          ================================
-          
-          1. 首次使用前，请编辑 config.yaml 文件：
-             - api.id: 您的 Telegram API ID
-             - api.hash: 您的 Telegram API Hash
-             - api.phone: 您的手机号（包含国家代码，如 +86）
-             - chat.target_id: 要下载的群组ID（可选）
-          
-          2. 获取 API 信息：
-             - 访问 https://my.telegram.org/apps
-             - 登录您的 Telegram 账号
-             - 创建新应用获取 API ID 和 Hash
-          
-          3. 使用方法：
-             - 双击 start.bat 启动程序
-             - 首次运行会要求输入验证码
-             - 程序会自动下载指定群组的媒体文件
-          
-          4. 下载的文件保存在 downloads 目录中
-          
-          5. 如有问题，请查看项目主页：
-             https://github.com/Heartcoolman/Tg-Down
-          EOF
-
-      - name: Create Linux package
-        run: |
-          # 复制必要文件到 Linux 包
-          cp config.yaml.example release/linux/config.yaml
-          cp .env.example release/linux/.env.example
-          cp LICENSE release/linux/
-          
-          # 创建 Linux 启动脚本
-          cat > release/linux/start.sh << 'EOF'
+          cp config.yaml.example dist/pkg/config.yaml
+          cp .env.example dist/pkg/.env.example || true
+          cp LICENSE dist/pkg/ || true
+          cp README.md dist/pkg/ || true
+          cat > dist/pkg/start.sh <<'EOF'
           #!/bin/bash
-          
-          echo "========================================"
-          echo "   Telegram群聊媒体下载器 v${GITHUB_REF#refs/tags/}"
-          echo "========================================"
-          echo
-          
-          # 检查配置文件
-          if [ ! -f "config.yaml" ]; then
-              echo "首次运行，请先配置 config.yaml 文件"
-              echo "请编辑 config.yaml 文件，填入您的 Telegram API 信息"
-              echo
-              echo "配置完成后，再次运行此脚本即可开始使用"
-              echo
-              exit 1
-          fi
-          
-          # 创建必要目录
-          mkdir -p downloads
-          mkdir -p sessions
-          
-          # 设置可执行权限
+          cd "$(dirname "$0")"
+          [ -f config.yaml ] || { echo "请先编辑 config.yaml 填入 API 信息"; exit 1; }
+          mkdir -p downloads sessions
           chmod +x tg-down
-          
-          echo "正在启动程序..."
-          echo
-          ./tg-down
+          ./tg-down "$@"
           EOF
-          
-          chmod +x release/linux/start.sh
-          chmod +x release/linux/tg-down
-          
-          # 创建配置说明文件
-          cat > release/linux/README.txt << 'EOF'
-          Telegram媒体下载器 - Linux版本
-          =============================
-          
-          1. 首次使用前，请编辑 config.yaml 文件：
-             - api.id: 您的 Telegram API ID
-             - api.hash: 您的 Telegram API Hash
-             - api.phone: 您的手机号（包含国家代码，如 +86）
-             - chat.target_id: 要下载的群组ID（可选）
-          
-          2. 获取 API 信息：
-             - 访问 https://my.telegram.org/apps
-             - 登录您的 Telegram 账号
-             - 创建新应用获取 API ID 和 Hash
-          
-          3. 使用方法：
-             - 运行: ./start.sh
-             - 或直接运行: ./tg-down
-          
-          4. 下载的文件保存在 downloads 目录中
-          
-          5. 如有问题，请查看项目主页：
-             https://github.com/Heartcoolman/Tg-Down
-          EOF
+          chmod +x dist/pkg/start.sh dist/pkg/tg-down
+          tar -czf "tg-down-${{ matrix.name }}.tar.gz" -C dist/pkg .
 
-      - name: Create macOS package
-        run: |
-          # 复制必要文件到 macOS 包
-          cp config.yaml.example release/macos/config.yaml
-          cp .env.example release/macos/.env.example
-          cp LICENSE release/macos/
-          
-          # 创建 macOS 启动脚本
-          cat > release/macos/start.sh << 'EOF'
-          #!/bin/bash
-          
-          echo "========================================"
-          echo "   Telegram群聊媒体下载器 v${GITHUB_REF#refs/tags/}"
-          echo "========================================"
-          echo
-          
-          # 检查配置文件
-          if [ ! -f "config.yaml" ]; then
-              echo "首次运行，请先配置 config.yaml 文件"
-              echo "请编辑 config.yaml 文件，填入您的 Telegram API 信息"
-              echo
-              echo "配置完成后，再次运行此脚本即可开始使用"
-              echo
-              exit 1
-          fi
-          
-          # 创建必要目录
-          mkdir -p downloads
-          mkdir -p sessions
-          
-          # 设置可执行权限
-          chmod +x tg-down
-          
-          echo "正在启动程序..."
-          echo
-          ./tg-down
-          EOF
-          
-          chmod +x release/macos/start.sh
-          chmod +x release/macos/tg-down
-          
-          # 创建配置说明文件
-          cat > release/macos/README.txt << 'EOF'
-          Telegram媒体下载器 - macOS版本
-          =============================
-          
-          1. 首次使用前，请编辑 config.yaml 文件：
-             - api.id: 您的 Telegram API ID
-             - api.hash: 您的 Telegram API Hash
-             - api.phone: 您的手机号（包含国家代码，如 +86）
-             - chat.target_id: 要下载的群组ID（可选）
-          
-          2. 获取 API 信息：
-             - 访问 https://my.telegram.org/apps
-             - 登录您的 Telegram 账号
-             - 创建新应用获取 API ID 和 Hash
-          
-          3. 使用方法：
-             - 运行: ./start.sh
-             - 或直接运行: ./tg-down
-          
-          4. 下载的文件保存在 downloads 目录中
-          
-          5. 注意：首次运行可能需要在系统偏好设置中允许运行
-          
-          6. 如有问题，请查看项目主页：
-             https://github.com/Heartcoolman/Tg-Down
-          EOF
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: tg-down-${{ matrix.name }}
+          path: tg-down-${{ matrix.name }}.tar.gz
 
-      - name: Create release packages
-        run: |
-          # 创建压缩包
-          cd release
-          
-          # Windows 包
-          zip -r ../tg-down-windows-amd64.zip windows/
-          
-          # Linux 包
-          tar -czf ../tg-down-linux-amd64.tar.gz linux/
-          
-          # macOS 包
-          tar -czf ../tg-down-macos-amd64.tar.gz macos/
-          
-          cd ..
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+          merge-multiple: true
 
-      - name: Create checksums
+      - name: Checksums
         run: |
-          sha256sum tg-down-*.zip tg-down-*.tar.gz tg-down-*-arm64 > checksums.txt
+          cd artifacts
+          sha256sum tg-down-*.tar.gz > checksums.txt
           cat checksums.txt
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            tg-down-windows-amd64.zip
-            tg-down-linux-amd64.tar.gz
-            tg-down-macos-amd64.tar.gz
-            tg-down-linux-arm64
-            tg-down-darwin-arm64
-            checksums.txt
+            artifacts/tg-down-*.tar.gz
+            artifacts/checksums.txt
           generate_release_notes: true
           draft: false
           prerelease: false
           body: |
-            ## 📦 完整打包版本 - 开箱即用
-            
-            本版本提供完整的打包文件，包含所有必要的配置文件和启动脚本，下载后即可使用！
-            
-            ### 🚀 快速开始
-            
-            1. **下载对应平台的压缩包**
-            2. **解压到任意目录**
-            3. **编辑 config.yaml 文件，填入您的 Telegram API 信息**
-            4. **双击启动脚本即可运行**
-            
-            ### 📋 文件说明
-            
-            - **Windows**: `tg-down-windows-amd64.zip`
-              - 包含: `tg-down.exe`, `start.bat`, `config.yaml`, `配置说明.txt`
-              - 使用: 双击 `start.bat` 启动
-            
-            - **Linux**: `tg-down-linux-amd64.tar.gz`
-              - 包含: `tg-down`, `start.sh`, `config.yaml`, `README.txt`
-              - 使用: 运行 `./start.sh` 启动
-            
-            - **macOS**: `tg-down-macos-amd64.tar.gz`
-              - 包含: `tg-down`, `start.sh`, `config.yaml`, `README.txt`
-              - 使用: 运行 `./start.sh` 启动
-            
-            ### 🔧 配置说明
-            
-            首次使用前，请编辑 `config.yaml` 文件：
-            1. 访问 https://my.telegram.org/apps 获取 API 信息
-            2. 填入 API ID、API Hash 和手机号
-            3. 可选：设置要下载的群组ID
-            
-            ### 💡 特性
-            
-            - ✅ 开箱即用，无需额外配置
-            - ✅ 自动创建必要目录
-            - ✅ 包含详细的使用说明
-            - ✅ 支持多平台（Windows/Linux/macOS）
-            - ✅ 一键启动脚本
+            ## 📦 发布包（基于官方 TDLib 引擎）
+
+            本版本下载引擎已切换为官方 TDLib，提供原生构建的二进制：
+
+            - **Linux x86_64**: `tg-down-linux-amd64.tar.gz`
+            - **macOS Apple Silicon**: `tg-down-darwin-arm64.tar.gz`
+
+            > CGo 依赖 libtdjson 已静态链入；运行仍需系统 OpenSSL（Linux: libssl3；macOS: `brew install openssl@3`）。
+            > Windows 及交叉编译目标因 CGo 暂不提供，可在对应平台自行 `make tdlib && make build` 构建。
+
+            ### 🚀 使用
+            1. 解压，编辑 `config.yaml` 填入 Telegram API 信息（https://my.telegram.org/apps）
+            2. 运行 `./start.sh`（或 `./tg-down`；`./tg-down --web` 启动网页管理端）
 
   dependency-submission:
     runs-on: ubuntu-latest
@@ -345,8 +119,11 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      - name: Setup TDLib
+        uses: ./.github/actions/setup-tdlib
+
       - name: Run Go Dependency Submission
         uses: actions/go-dependency-submission@v2
         with:
           go-mod-path: go.mod
-          go-build-target: cmd/main.go
+          go-build-target: ./cmd

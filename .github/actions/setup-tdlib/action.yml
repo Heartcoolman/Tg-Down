@@ -1,0 +1,26 @@
+name: Setup TDLib
+description: Build (or restore from cache) libtdjson and export CGO build env for the Go build.
+runs:
+  using: composite
+  steps:
+    - name: Cache TDLib
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.tdlib
+        # Keyed on OS+arch and the install script's content (which pins the TDLib
+        # commit), so changing the pinned commit auto-invalidates the cache and
+        # different architectures never share an incompatible libtdjson.
+        key: tdlib-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-tdlib.sh') }}
+
+    - name: Build TDLib (cache miss)
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: bash scripts/install-tdlib.sh
+
+    - name: Export CGO env
+      shell: bash
+      run: |
+        echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
+        echo "CGO_CFLAGS=-I$HOME/.tdlib/include" >> "$GITHUB_ENV"
+        echo "CGO_LDFLAGS=-L$HOME/.tdlib/lib -Wl,-rpath,$HOME/.tdlib/lib" >> "$GITHUB_ENV"
