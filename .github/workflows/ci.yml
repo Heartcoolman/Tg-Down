@@ -48,7 +48,7 @@ jobs:
           ls -la tg-down
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: tg-down-linux
           path: tg-down
