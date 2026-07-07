@@ -18,7 +18,6 @@ import (
 // routes 注册所有 HTTP 路由
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /", s.handleIndex)
-	mux.HandleFunc("GET /prism.css", s.handlePrismCSS)
 	mux.HandleFunc("GET /api/state", s.handleState)
 	mux.HandleFunc("GET /api/chats", s.handleChats)
 	mux.HandleFunc("POST /api/chats/refresh", s.handleChatsRefresh)
@@ -26,6 +25,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/auth/credentials", s.handleAuthCredentials)
 	mux.HandleFunc("POST /api/auth/code", s.handleAuthCode)
 	mux.HandleFunc("POST /api/auth/password", s.handleAuthPassword)
+	mux.HandleFunc("POST /api/auth/abort", s.handleAuthAbort)
+	mux.HandleFunc("POST /api/auth/logout", s.handleAuthLogout)
+	mux.HandleFunc("GET /api/settings", s.handleSettings)
+	mux.HandleFunc("POST /api/settings/classify", s.handleSettingsClassify)
 	mux.HandleFunc("GET /api/tasks", s.handleTasksList)
 	mux.HandleFunc("POST /api/tasks", s.handleTasksCreate)
 	mux.HandleFunc("POST /api/tasks/{id}/cancel", s.handleTaskCancel)
@@ -45,12 +48,6 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(indexHTML)
-}
-
-func (s *Server) handlePrismCSS(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=3600")
-	_, _ = w.Write(prismCSS)
 }
 
 func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
@@ -156,6 +153,80 @@ func (s *Server) handleAuthPassword(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.writeError(w, http.StatusConflict, "密码提交处理中，请勿重复提交")
 	}
+}
+
+// handleAuthAbort 中止当前登录（验证码/密码步骤的"返回上一步"），回到凭据输入页
+func (s *Server) handleAuthAbort(w http.ResponseWriter, _ *http.Request) {
+	if state, _ := s.currentState(); state != StateWaitingCode && state != StateWaitingPassword {
+		s.writeError(w, http.StatusConflict, "当前不在等待验证码/密码状态")
+		return
+	}
+	select {
+	case s.abortCh <- struct{}{}:
+		s.writeOK(w)
+	default:
+		s.writeError(w, http.StatusConflict, "中止请求处理中，请勿重复提交")
+	}
+}
+
+// handleAuthLogout 注销当前 Telegram 会话：先取消所有活动任务，再吊销授权并销毁本地会话，
+// 最后通知 runTelegram 重新进入认证循环（回到凭据输入页）
+func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
+	if !s.requireReady(w) {
+		return
+	}
+	for _, t := range s.queue.List() {
+		if t.Status == string(queue.StatusQueued) || t.Status == string(queue.StatusRunning) {
+			if err := s.queue.Cancel(t.ID); err != nil {
+				s.logger.Warn("登出前取消任务 %s 失败: %v", t.ID, err)
+			}
+		}
+	}
+	if err := s.client.Logout(r.Context()); err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	select {
+	case s.logoutCh <- struct{}{}:
+	default:
+	}
+	s.writeOK(w)
+}
+
+func (s *Server) handleSettings(w http.ResponseWriter, _ *http.Request) {
+	s.writeJSON(w, s.settingsSnapshot())
+}
+
+func (s *Server) handleSettingsClassify(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ClassifyByType bool `json:"classify_by_type"`
+	}
+	if !s.decode(w, r, &body) {
+		return
+	}
+	if err := s.client.SetClassifyByType(body.ClassifyByType); err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.logger.Info("按媒体类型分类存储已%s", map[bool]string{true: "开启", false: "关闭"}[body.ClassifyByType])
+	s.writeJSON(w, s.settingsSnapshot())
+}
+
+func (s *Server) settingsSnapshot() settingsDTO {
+	return settingsDTO{
+		DownloadPath:   s.client.DownloadPath(),
+		ClassifyByType: s.client.ClassifyByType(),
+		MediaConcurrency: downloadSettingsDTO{
+			MaxConcurrent: s.client.DownloadConcurrency(),
+			Active:        s.client.ActiveDownloadCount(),
+		},
+	}
+}
+
+type settingsDTO struct {
+	DownloadPath     string              `json:"download_path"`
+	ClassifyByType   bool                `json:"classify_by_type"`
+	MediaConcurrency downloadSettingsDTO `json:"media_concurrency"`
 }
 
 func (s *Server) handleTasksList(w http.ResponseWriter, _ *http.Request) {

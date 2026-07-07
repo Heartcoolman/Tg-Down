@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"tg-down/internal/logger"
@@ -80,7 +81,7 @@ type Downloader struct {
 	stats          *DownloadStats
 	downloadFunc   func(context.Context, *MediaInfo, string) error
 	pauseFunc      func(context.Context, *MediaInfo) error
-	classifyByType bool
+	classifyByType atomic.Bool // Web 端可运行时切换，下载 goroutine 并发读取
 	recordFunc     func(context.Context, RecordEvent)
 
 	progressMu        sync.RWMutex
@@ -209,7 +210,12 @@ func (d *Downloader) SetPauseFunc(fn func(context.Context, *MediaInfo) error) {
 
 // SetClassifyByType 设置是否按媒体类型分类存储
 func (d *Downloader) SetClassifyByType(v bool) {
-	d.classifyByType = v
+	d.classifyByType.Store(v)
+}
+
+// ClassifyByType 返回是否按媒体类型分类存储
+func (d *Downloader) ClassifyByType() bool {
+	return d.classifyByType.Load()
 }
 
 // SetRecordFunc 设置下载历史记录回调
@@ -696,7 +702,7 @@ func (d *Downloader) downloadedBytes(key string) int64 {
 }
 
 func (d *Downloader) planMediaPath(ctx context.Context, media *MediaInfo) (chatDir, fileName, filePath string) {
-	plan, err := rustcore.PlanMediaPath(ctx, d.downloadPath, d.classifyByType, rustcore.MediaInfo{
+	plan, err := rustcore.PlanMediaPath(ctx, d.downloadPath, d.classifyByType.Load(), rustcore.MediaInfo{
 		MessageID: media.MessageID,
 		TDFileID:  media.TDFileID,
 		MediaType: media.MediaType,
@@ -715,7 +721,7 @@ func (d *Downloader) planMediaPath(ctx context.Context, media *MediaInfo) (chatD
 
 func (d *Downloader) planMediaPathGo(media *MediaInfo) (chatDir, fileName, filePath string) {
 	chatDir = filepath.Join(d.downloadPath, fmt.Sprintf("chat_%d", media.ChatID))
-	if d.classifyByType {
+	if d.classifyByType.Load() {
 		chatDir = filepath.Join(chatDir, classifyDir(media.MediaType))
 	}
 

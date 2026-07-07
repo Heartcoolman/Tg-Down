@@ -25,9 +25,6 @@ import (
 //go:embed static/index.html
 var indexHTML []byte
 
-//go:embed static/prism.css
-var prismCSS []byte
-
 const (
 	// DefaultAddr is the default listen address (localhost only).
 	DefaultAddr = "127.0.0.1:8080"
@@ -81,10 +78,15 @@ type Server struct {
 	stateErr string
 	chats    []telegram.ChatInfo
 
-	codeCh chan string
-	passCh chan string
-	credCh chan struct{} // Web 端提交 API 凭据的信号
+	codeCh   chan string
+	passCh   chan string
+	credCh   chan struct{} // Web 端提交 API 凭据的信号
+	abortCh  chan struct{} // Web 端中止当前登录（验证码/密码步骤的"返回上一步"）
+	logoutCh chan struct{} // Web 端登出完成，通知 runTelegram 重新进入认证循环
 }
+
+// errAuthAborted 标记用户主动中止登录（返回上一步），区别于真实认证失败
+var errAuthAborted = errors.New("登录已被用户中止")
 
 // New 创建 Web 管理端，内部以 maxConcurrentTasks 构建任务队列管理器
 func New(client *telegram.Client, st *store.Store, log *logger.Logger, addr string, maxConcurrentTasks int) *Server {
@@ -104,6 +106,8 @@ func New(client *telegram.Client, st *store.Store, log *logger.Logger, addr stri
 		codeCh:       make(chan string, authChanSize),
 		passCh:       make(chan string, authChanSize),
 		credCh:       make(chan struct{}, authChanSize),
+		abortCh:      make(chan struct{}, authChanSize),
+		logoutCh:     make(chan struct{}, authChanSize),
 	}
 }
 
@@ -169,6 +173,7 @@ func (s *Server) runTelegram(ctx context.Context) {
 			}
 		}
 
+		s.drainAuthSignals()
 		s.setState(StateConnecting)
 		err := s.client.AuthenticateWith(ctx, s.webCode, s.webPassword)
 		if ctx.Err() != nil {
@@ -176,6 +181,17 @@ func (s *Server) runTelegram(ctx context.Context) {
 			return
 		}
 		if err != nil {
+			if errors.Is(err, errAuthAborted) {
+				// 用户返回上一步：清理未完成的登录会话与手机号，回到凭据输入页
+				if cerr := s.client.ClearSession(); cerr != nil {
+					s.logger.Warn("清理登录会话失败: %v", cerr)
+				}
+				if perr := s.client.ClearPhone(); perr != nil {
+					s.logger.Warn("清除手机号失败: %v", perr)
+				}
+				delay = initialReconnectDelay
+				continue
+			}
 			s.setError(err)
 			s.logger.Error("Telegram 连接失败，%s 后重试: %v", delay, err)
 			// 退避等待；若用户期间重新提交凭据则立即重试
@@ -195,29 +211,54 @@ func (s *Server) runTelegram(ctx context.Context) {
 		s.logger.Info("Telegram 已连接，Web 端就绪")
 		s.refreshChats(ctx)
 
-		<-ctx.Done()
-		s.client.Close()
-		return
+		select {
+		case <-ctx.Done():
+			s.client.Close()
+			return
+		case <-s.logoutCh:
+			// 会话已在 handleAuthLogout 中销毁，清空聊天缓存后重新进入认证循环
+			s.mu.Lock()
+			s.chats = nil
+			s.mu.Unlock()
+			delay = initialReconnectDelay
+		}
 	}
 }
 
-// webCode 等待 Web 端提交验证码
+// drainAuthSignals 丢弃上一轮认证遗留的过期信号，避免误触发本轮的验证码提交或中止
+func (s *Server) drainAuthSignals() {
+	for {
+		select {
+		case <-s.codeCh:
+		case <-s.passCh:
+		case <-s.abortCh:
+		default:
+			return
+		}
+	}
+}
+
+// webCode 等待 Web 端提交验证码；用户可经 abortCh 中止本次登录
 func (s *Server) webCode(ctx context.Context) (string, error) {
 	s.setState(StateWaitingCode)
 	select {
 	case code := <-s.codeCh:
 		return code, nil
+	case <-s.abortCh:
+		return "", errAuthAborted
 	case <-ctx.Done():
 		return "", ctx.Err()
 	}
 }
 
-// webPassword 等待 Web 端提交两步验证密码
+// webPassword 等待 Web 端提交两步验证密码；用户可经 abortCh 中止本次登录
 func (s *Server) webPassword(ctx context.Context) (string, error) {
 	s.setState(StateWaitingPassword)
 	select {
 	case pw := <-s.passCh:
 		return pw, nil
+	case <-s.abortCh:
+		return "", errAuthAborted
 	case <-ctx.Done():
 		return "", ctx.Err()
 	}

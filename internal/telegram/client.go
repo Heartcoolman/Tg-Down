@@ -76,6 +76,8 @@ const (
 	dbDirPerm = 0o700
 	// tdNotFoundCode 是 TDLib 列表耗尽时返回的错误码
 	tdNotFoundCode = 404
+	// logoutCloseTimeout 是 LogOut 后等待 TDLib 销毁本地数据并进入 closed 状态的上限
+	logoutCloseTimeout = 10 * time.Second
 )
 
 // CodeFunc 提供登录验证码
@@ -105,8 +107,9 @@ type Client struct {
 	monitorTaskID atomic.Value // 实时监控关联的任务ID（string，""=无关联任务）
 	lastMessageID int64        // 手动轮询游标
 
-	mu sync.Mutex
-	td *tdclient.Client // Connect 后才有值
+	mu       sync.Mutex
+	td       *tdclient.Client // Connect 后才有值
+	closedCh chan struct{}    // Logout 前注册，TDLib 发布 authorizationStateClosed 时关闭
 
 	credMu sync.Mutex // 保护 config.API 凭据（Web 端可动态注入）
 
@@ -438,6 +441,21 @@ func (c *Client) DownloadConcurrency() int { return c.downloader.MaxConcurrent()
 // ActiveDownloadCount 返回正在占用下载槽的媒体数量。
 func (c *Client) ActiveDownloadCount() int { return c.downloader.ActiveCount() }
 
+// DownloadPath 返回媒体下载目录
+func (c *Client) DownloadPath() string { return c.config.Download.Path }
+
+// ClassifyByType 返回是否按媒体类型分类存储
+func (c *Client) ClassifyByType() bool { return c.downloader.ClassifyByType() }
+
+// SetClassifyByType 切换按媒体类型分类存储（立即生效），并写回 config.yaml
+func (c *Client) SetClassifyByType(on bool) error {
+	c.downloader.SetClassifyByType(on)
+	c.credMu.Lock()
+	c.config.Download.DisableClassifyByType = !on
+	c.credMu.Unlock()
+	return c.SaveConfig()
+}
+
 // SetDownloadConcurrency 调整媒体文件并发下载数量，并写回 config.yaml 便于下次启动沿用。
 func (c *Client) SetDownloadConcurrency(n int) error {
 	if n <= 0 {
@@ -493,6 +511,58 @@ func (c *Client) ClearSession() error {
 	}
 	c.logger.Info("会话已清除，下次启动需要重新登录")
 	return nil
+}
+
+// ClearPhone 清除手机号并写回 config.yaml，使 Web 端回到凭据输入页，
+// 且下次启动不会误用旧手机号自动发起登录。
+func (c *Client) ClearPhone() error {
+	c.credMu.Lock()
+	c.config.API.Phone = ""
+	c.credMu.Unlock()
+	return c.SaveConfig()
+}
+
+// Logout 注销当前 Telegram 会话：服务端吊销授权，TDLib 随之销毁本地数据并自行关闭。
+// 等待 closed 状态后清理残留会话目录与手机号。注意不可再对已关闭实例调用 Close
+// 请求（响应永不到达），仅置空引用。
+func (c *Client) Logout(ctx context.Context) error {
+	c.mu.Lock()
+	td := c.td
+	if td == nil {
+		c.mu.Unlock()
+		return errors.New("TDLib 未连接")
+	}
+	closed := make(chan struct{})
+	c.closedCh = closed
+	c.mu.Unlock()
+
+	if _, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Ok, error) {
+		return td.LogOut(cc)
+	}); err != nil {
+		c.mu.Lock()
+		c.closedCh = nil
+		c.mu.Unlock()
+		return fmt.Errorf("登出失败: %w", err)
+	}
+
+	select {
+	case <-closed:
+	case <-time.After(logoutCloseTimeout):
+		c.logger.Warn("等待 TDLib 关闭超时，继续清理本地会话")
+	case <-ctx.Done():
+	}
+
+	c.mu.Lock()
+	if c.td == td {
+		c.td = nil
+	}
+	c.closedCh = nil
+	c.mu.Unlock()
+
+	_ = os.RemoveAll(c.dbDir)
+	c.SetTargetChat(0)
+	c.logger.Info("已退出登录，会话已销毁")
+	return c.ClearPhone()
 }
 
 // --- 聊天枚举 ---
@@ -1028,6 +1098,22 @@ func (c *Client) onUpdate(t tdclient.Type) {
 		c.onNewMessage(u.Message)
 	case *tdclient.UpdateConnectionState:
 		c.onConnectionState(u.State)
+	case *tdclient.UpdateAuthorizationState:
+		c.onAuthorizationState(u.AuthorizationState)
+	}
+}
+
+// onAuthorizationState 在 TDLib 进入 closed 状态时通知 Logout 等待方（必须快速非阻塞）
+func (c *Client) onAuthorizationState(state tdclient.AuthorizationState) {
+	if state == nil || state.AuthorizationStateConstructor() != tdclient.ConstructorAuthorizationStateClosed {
+		return
+	}
+	c.mu.Lock()
+	ch := c.closedCh
+	c.closedCh = nil
+	c.mu.Unlock()
+	if ch != nil {
+		close(ch)
 	}
 }
 
