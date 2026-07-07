@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,7 @@ const (
 
 	shutdownTimeout       = 5 * time.Second
 	readHeaderTimeout     = 10 * time.Second
+	readTimeout           = 30 * time.Second // 限制整个请求体读取时长，防慢速攻击；SSE 无请求体不受影响
 	snapshotInterval      = time.Second
 	sseBufferSize         = 32
 	authChanSize          = 1
@@ -64,13 +66,15 @@ const (
 
 // Server 是 Web 管理端
 type Server struct {
-	client  *telegram.Client
-	store   *store.Store
-	queue   *queue.Manager
-	logger  *logger.Logger
-	addr    string
-	hub     *sseHub
-	baseCtx context.Context // 下载任务的生命周期父上下文（在 Run 中设置）
+	client       *telegram.Client
+	store        *store.Store
+	queue        *queue.Manager
+	logger       *logger.Logger
+	addr         string
+	token        string   // 访问令牌（TG_DOWN_WEB_TOKEN）；非本地监听时必需
+	allowedHosts []string // 额外放行的 Host 白名单
+	hub          *sseHub
+	baseCtx      context.Context // 下载任务的生命周期父上下文（在 Run 中设置）
 
 	mu       sync.RWMutex
 	state    State
@@ -88,16 +92,18 @@ func New(client *telegram.Client, st *store.Store, log *logger.Logger, addr stri
 		addr = DefaultAddr
 	}
 	return &Server{
-		client: client,
-		store:  st,
-		queue:  queue.NewManager(client, st, log, maxConcurrentTasks),
-		logger: log,
-		addr:   addr,
-		hub:    newSSEHub(),
-		state:  StateConnecting,
-		codeCh: make(chan string, authChanSize),
-		passCh: make(chan string, authChanSize),
-		credCh: make(chan struct{}, authChanSize),
+		client:       client,
+		store:        st,
+		queue:        queue.NewManager(client, st, log, maxConcurrentTasks),
+		logger:       log,
+		addr:         addr,
+		token:        os.Getenv(webTokenEnv),
+		allowedHosts: parseAllowedHosts(os.Getenv(allowedHostsEnv)),
+		hub:          newSSEHub(),
+		state:        StateConnecting,
+		codeCh:       make(chan string, authChanSize),
+		passCh:       make(chan string, authChanSize),
+		credCh:       make(chan struct{}, authChanSize),
 	}
 }
 
@@ -112,12 +118,18 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.snapshotLoop(ctx)
 	go s.queue.Run(ctx)
 
+	if !isLoopbackAddr(s.addr) && s.token == "" {
+		return fmt.Errorf("监听非本地地址 %s 时必须通过环境变量 %s 设置访问令牌，否则拒绝启动", s.addr, webTokenEnv)
+	}
+
 	mux := http.NewServeMux()
 	s.routes(mux)
 	srv := &http.Server{
 		Addr:              s.addr,
-		Handler:           mux,
+		Handler:           s.withSecurity(mux),
 		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		// 不设置 WriteTimeout：SSE 事件流为长连接，写超时会中断推送。
 	}
 
 	go func() { //nolint:gosec // 父 ctx 已取消，关闭需独立超时窗口
@@ -129,8 +141,8 @@ func (s *Server) Run(ctx context.Context) error {
 		_ = srv.Shutdown(shutCtx)
 	}()
 
-	if !strings.HasPrefix(s.addr, "127.0.0.1") && !strings.HasPrefix(s.addr, "localhost") {
-		s.logger.Warn("Web 端监听非本地地址 %s，无访问鉴权，请确保网络可信", s.addr)
+	if !isLoopbackAddr(s.addr) {
+		s.logger.Info("Web 端监听非本地地址 %s，已启用访问令牌鉴权", s.addr)
 	}
 	s.logger.Info("Web 管理端已启动: http://%s", s.addr)
 
@@ -281,12 +293,14 @@ func (s *Server) onLog(level, msg string) {
 func (s *Server) snapshot() stateSnapshot {
 	state, stateErr := s.currentState()
 	return stateSnapshot{
-		State:       state,
-		Error:       stateErr,
-		Phone:       maskPhone(s.client.Phone()),
-		TargetChat:  s.client.TargetChat(),
-		ActiveTasks: s.activeTaskCount(),
-		Stats:       s.client.Stats(),
+		State:            state,
+		Error:            stateErr,
+		Phone:            maskPhone(s.client.Phone()),
+		TargetChat:       s.client.TargetChat(),
+		ActiveTasks:      s.activeTaskCount(),
+		Stats:            s.client.Stats(),
+		Media:            s.client.ActiveMedia(),
+		MediaConcurrency: downloadSettingsDTO{MaxConcurrent: s.client.DownloadConcurrency(), Active: s.client.ActiveDownloadCount()},
 	}
 }
 
@@ -313,16 +327,23 @@ func maskPhone(phone string) string {
 // --- DTOs ---
 
 type stateSnapshot struct {
-	State       State            `json:"state"`
-	Error       string           `json:"error,omitempty"`
-	Phone       string           `json:"phone"`
-	TargetChat  int64            `json:"target_chat"`
-	ActiveTasks int              `json:"active_tasks"`
-	Stats       downloader.Stats `json:"stats"`
+	State            State                      `json:"state"`
+	Error            string                     `json:"error,omitempty"`
+	Phone            string                     `json:"phone"`
+	TargetChat       int64                      `json:"target_chat"`
+	ActiveTasks      int                        `json:"active_tasks"`
+	Stats            downloader.Stats           `json:"stats"`
+	Media            []downloader.MediaProgress `json:"media"`
+	MediaConcurrency downloadSettingsDTO        `json:"media_concurrency"`
 }
 
 type logEntry struct {
 	Time  string `json:"time"`
 	Level string `json:"level"`
 	Msg   string `json:"msg"`
+}
+
+type downloadSettingsDTO struct {
+	MaxConcurrent int `json:"max_concurrent"`
+	Active        int `json:"active"`
 }

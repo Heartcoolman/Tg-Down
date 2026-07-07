@@ -12,11 +12,16 @@ import (
 //
 // 权衡：本包不依赖 logger（保持持久层无外部依赖），且下载流程不能因历史记录
 // 写入失败而失败/阻塞，因此这里对存储写入错误一律静默忽略，不 panic、不重试。
+//
+// 终态记录一律使用 context.Background() 落盘：调用方传入的 ctx 在取消/关停时可能已失效，
+// 若沿用会使被取消下载的 RecordFailed 写入被 database/sql 直接中止，导致 history 行永久停在
+// "downloading"。终态持久化必须不受请求 ctx 取消影响。
 func NewRecorder(s *Store) func(context.Context, downloader.RecordEvent) {
-	return func(ctx context.Context, evt downloader.RecordEvent) {
+	return func(_ context.Context, evt downloader.RecordEvent) {
 		if evt.Media == nil {
 			return
 		}
+		ctx := context.Background()
 
 		switch evt.Status {
 		case downloader.RecordStarted, downloader.RecordSkipped:

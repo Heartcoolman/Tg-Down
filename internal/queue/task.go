@@ -113,7 +113,11 @@ func (t *task) applyRecordEvent(evt downloader.RecordEvent) {
 		t.stats.Skipped++
 	case downloader.RecordCompleted:
 		t.stats.Downloaded++
-		t.stats.DownloadedSize += evt.Media.FileSize
+		if evt.DownloadedSize > 0 {
+			t.stats.DownloadedSize += evt.DownloadedSize
+		} else {
+			t.stats.DownloadedSize += evt.Media.FileSize
+		}
 	case downloader.RecordFailed:
 		t.stats.Failed++
 	}

@@ -328,31 +328,33 @@ func setDefaults(config *Config) {
 	if config.Download.MaxConcurrent <= 0 {
 		config.Download.MaxConcurrent = DefaultMaxConcurrent
 	}
-	if config.Download.BatchSize == 0 {
+	// 以下数值项统一用 <= 0 守卫：负值与 0 一样回退默认值，避免负的 BatchSize/延迟/重试次数
+	// 通过校验后进入下载/退避热路径（如负 BaseDelay 使退避为负、time.After 立即触发导致零延迟热重试）。
+	if config.Download.BatchSize <= 0 {
 		config.Download.BatchSize = DefaultBatchSize
 	}
 	// chunk_size 必须是合法的 Telegram 分片大小：4KB 的倍数且能整除 1MB，否则回退默认值
 	if !validChunkSizes[config.Download.ChunkSize] {
 		config.Download.ChunkSize = DefaultChunkSize
 	}
-	if config.Download.MaxWorkers == 0 {
+	if config.Download.MaxWorkers <= 0 {
 		config.Download.MaxWorkers = DefaultMaxWorkers
 	}
 
-	if config.Retry.MaxRetries == 0 {
+	if config.Retry.MaxRetries <= 0 {
 		config.Retry.MaxRetries = DefaultMaxRetries
 	}
-	if config.Retry.BaseDelay == 0 {
+	if config.Retry.BaseDelay <= 0 {
 		config.Retry.BaseDelay = DefaultBaseDelay
 	}
-	if config.Retry.MaxDelay == 0 {
+	if config.Retry.MaxDelay <= 0 {
 		config.Retry.MaxDelay = DefaultMaxDelay
 	}
 
-	if config.RateLimit.RequestsPerSecond == 0 {
+	if config.RateLimit.RequestsPerSecond <= 0 {
 		config.RateLimit.RequestsPerSecond = DefaultRequestsPerSecond
 	}
-	if config.RateLimit.BurstSize == 0 {
+	if config.RateLimit.BurstSize <= 0 {
 		config.RateLimit.BurstSize = DefaultBurstSize
 	}
 

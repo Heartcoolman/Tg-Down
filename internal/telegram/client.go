@@ -53,9 +53,13 @@ const (
 	// emptyHistoryRetries is how many consecutive empty pages end a history sweep.
 	// TDLib often returns empty pages while it fetches history from the server
 	// (even with OnlyLocal:false), so the budget must tolerate that latency.
-	emptyHistoryRetries = 5
-	// emptyHistorySleep is the wait between consecutive empty history pages.
+	emptyHistoryRetries = 8
+	// emptyHistorySleep is the base wait between consecutive empty history pages;
+	// the actual wait grows with the empty streak (capped) so slow server-side
+	// backfill is not mistaken for end-of-history.
 	emptyHistorySleep = 1 * time.Second
+	// maxEmptyHistorySleep caps the progressive empty-page backoff.
+	maxEmptyHistorySleep = 5 * time.Second
 
 	mediaTypePhoto     = "photo"
 	mediaTypeDocument  = "document"
@@ -143,6 +147,7 @@ func newClient(cfg *config.Config, log *logger.Logger, chatID int64) *Client {
 	c.monitorTaskID.Store("")
 	c.downloader = downloader.New(cfg.Download.Path, cfg.Download.MaxConcurrent, log)
 	c.downloader.SetDownloadFunc(c.DownloadFile)
+	c.downloader.SetPauseFunc(c.pauseDownloadFile)
 	c.downloader.SetClassifyByType(!cfg.Download.DisableClassifyByType)
 	return c
 }
@@ -232,6 +237,34 @@ func (c *Client) client() *tdclient.Client {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.td
+}
+
+// tdCall 在后台 goroutine 中以不可取消的 background ctx 执行一次 TDLib 请求，规避
+// go-tdlib v1.0.0-beta1 绑定的 Send 在传入 ctx 取消时 close(catcher) 与接收 goroutine
+// 并发发送引发的 "send on closed channel" 进程级崩溃。本函数仍在 ctx 取消或超时后即时返回；
+// 后台 goroutine 会在 TDLib 最终响应（或 Close 中止）后自然退出，其响应被安全丢弃。
+func tdCall[T any](ctx context.Context, timeout time.Duration, fn func(context.Context) (T, error)) (T, error) {
+	type outcome struct {
+		v   T
+		err error
+	}
+	ch := make(chan outcome, 1)
+	go func() {
+		v, err := fn(context.Background())
+		ch <- outcome{v, err}
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case o := <-ch:
+		return o.v, o.err
+	case <-ctx.Done():
+		var zero T
+		return zero, ctx.Err()
+	case <-timer.C:
+		var zero T
+		return zero, fmt.Errorf("TDLib 请求超时: %s", timeout)
+	}
 }
 
 // checkTDLibVersion 比对运行时 TDLib commit 与绑定生成代码所基于的版本
@@ -386,6 +419,37 @@ func (c *Client) monitorTask() string {
 // Stats 返回下载统计快照
 func (c *Client) Stats() downloader.Stats { return c.downloader.Snapshot() }
 
+// ActiveMedia 返回当前排队或下载中的媒体进度快照。
+func (c *Client) ActiveMedia() []downloader.MediaProgress { return c.downloader.ActiveMedia() }
+
+// PauseMedia 暂停单个媒体下载。
+func (c *Client) PauseMedia(ctx context.Context, id string) error {
+	return c.downloader.PauseMedia(ctx, id)
+}
+
+// ResumeMedia 继续单个媒体下载。
+func (c *Client) ResumeMedia(id string) error {
+	return c.downloader.ResumeMedia(id)
+}
+
+// DownloadConcurrency 返回当前媒体文件并发下载数量。
+func (c *Client) DownloadConcurrency() int { return c.downloader.MaxConcurrent() }
+
+// ActiveDownloadCount 返回正在占用下载槽的媒体数量。
+func (c *Client) ActiveDownloadCount() int { return c.downloader.ActiveCount() }
+
+// SetDownloadConcurrency 调整媒体文件并发下载数量，并写回 config.yaml 便于下次启动沿用。
+func (c *Client) SetDownloadConcurrency(n int) error {
+	if n <= 0 {
+		return fmt.Errorf("并发数量必须大于 0")
+	}
+	c.downloader.SetMaxConcurrent(n)
+	c.credMu.Lock()
+	c.config.Download.MaxConcurrent = n
+	c.credMu.Unlock()
+	return c.SaveConfig()
+}
+
 // SetRecordFunc 设置下载记录回调，用于持久化下载历史
 func (c *Client) SetRecordFunc(fn func(context.Context, downloader.RecordEvent)) {
 	c.downloader.SetRecordFunc(fn)
@@ -439,14 +503,14 @@ func (c *Client) GetChats(ctx context.Context) ([]ChatInfo, error) {
 	if td == nil {
 		return nil, errors.New("TDLib 未连接")
 	}
-	mctx, cancel := context.WithTimeout(ctx, metadataTimeout)
-	defer cancel()
 
 	seen := make(map[int64]bool)
 	var order []int64
 	for _, list := range []tdclient.ChatList{&tdclient.ChatListMain{}, &tdclient.ChatListArchive{}} {
-		c.loadAllChats(mctx, td, list)
-		chats, err := td.GetChats(mctx, &tdclient.GetChatsRequest{ChatList: list, Limit: maxChatLimit})
+		c.loadAllChats(ctx, td, list)
+		chats, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Chats, error) {
+			return td.GetChats(cc, &tdclient.GetChatsRequest{ChatList: list, Limit: maxChatLimit})
+		})
 		if err != nil {
 			return nil, fmt.Errorf("获取聊天列表失败: %w", err)
 		}
@@ -460,7 +524,9 @@ func (c *Client) GetChats(ctx context.Context) ([]ChatInfo, error) {
 
 	result := make([]ChatInfo, 0, len(order))
 	for _, id := range order {
-		chat, err := td.GetChat(mctx, &tdclient.GetChatRequest{ChatId: id})
+		chat, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Chat, error) {
+			return td.GetChat(cc, &tdclient.GetChatRequest{ChatId: id})
+		})
 		if err != nil {
 			continue
 		}
@@ -474,7 +540,9 @@ func (c *Client) GetChats(ctx context.Context) ([]ChatInfo, error) {
 // loadAllChats 反复调用 LoadChats 把指定列表全部载入本地缓存，直到 404（无更多）
 func (c *Client) loadAllChats(ctx context.Context, td *tdclient.Client, list tdclient.ChatList) {
 	for {
-		_, err := td.LoadChats(ctx, &tdclient.LoadChatsRequest{ChatList: list, Limit: chatLoadBatch})
+		_, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Ok, error) {
+			return td.LoadChats(cc, &tdclient.LoadChatsRequest{ChatList: list, Limit: chatLoadBatch})
+		})
 		if err == nil {
 			continue
 		}
@@ -626,12 +694,14 @@ func (c *Client) DownloadFile(ctx context.Context, media *downloader.MediaInfo, 
 		c.registerProgress(media)
 		defer c.unregisterProgress(media.TDFileID)
 
-		file, err := td.DownloadFile(ctx, &tdclient.DownloadFileRequest{
-			FileId:      media.TDFileID,
-			Priority:    downloadPriority,
-			Offset:      0,
-			Limit:       0,
-			Synchronous: true,
+		file, err := tdCall(ctx, fallbackTimeout, func(cc context.Context) (*tdclient.File, error) {
+			return td.DownloadFile(cc, &tdclient.DownloadFileRequest{
+				FileId:      media.TDFileID,
+				Priority:    downloadPriority,
+				Offset:      0,
+				Limit:       0,
+				Synchronous: true,
+			})
 		})
 		if err != nil {
 			return fmt.Errorf("下载文件失败: %w", err)
@@ -641,6 +711,20 @@ func (c *Client) DownloadFile(ctx context.Context, media *downloader.MediaInfo, 
 		}
 		return c.moveWithRetry(file.Local.Path, filePath)
 	})
+}
+
+func (c *Client) pauseDownloadFile(ctx context.Context, media *downloader.MediaInfo) error {
+	td := c.client()
+	if td == nil {
+		return errors.New("TDLib 未连接")
+	}
+	_, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Ok, error) {
+		return td.CancelDownloadFile(cc, &tdclient.CancelDownloadFileRequest{
+			FileId:        media.TDFileID,
+			OnlyIfPending: false,
+		})
+	})
+	return err
 }
 
 // moveWithRetry 将 TDLib 缓存文件移动到目标路径，跨设备时回退为复制
@@ -661,7 +745,9 @@ func (c *Client) moveWithRetry(src, dst string) error {
 	return nil
 }
 
-// copyFile 复制文件内容到目标路径
+// copyFile 复制文件内容到目标路径。为避免出错时在最终路径留下截断文件
+// （后续 os.Stat 存在性检查会将其误判为已下载完成），先写入同目录 .part 临时文件，
+// 全部成功后再原子 rename 到目标路径；任何环节失败都会清理临时文件。
 func copyFile(src, dst string) error {
 	in, err := os.Open(filepath.Clean(src))
 	if err != nil {
@@ -669,7 +755,8 @@ func copyFile(src, dst string) error {
 	}
 	defer func() { _ = in.Close() }()
 
-	out, err := os.Create(filepath.Clean(dst))
+	tmp := filepath.Clean(dst) + ".part"
+	out, err := os.Create(tmp)
 	if err != nil {
 		return err
 	}
@@ -677,9 +764,18 @@ func copyFile(src, dst string) error {
 	buf := make([]byte, copyBufferSize)
 	if _, err = io.CopyBuffer(out, in, buf); err != nil {
 		_ = out.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
-	return out.Close()
+	if err = out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err = os.Rename(tmp, filepath.Clean(dst)); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // registerProgress 注册一个进行中的下载，便于 UpdateFile 输出友好进度日志
@@ -703,14 +799,19 @@ func (c *Client) DownloadHistoryMedia(ctx context.Context, chatID int64, taskID 
 	}
 	c.logger.Info("开始下载聊天 %d 的历史媒体文件", chatID)
 
-	if _, err := td.GetChat(ctx, &tdclient.GetChatRequest{ChatId: chatID}); err != nil {
+	if _, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Chat, error) {
+		return td.GetChat(cc, &tdclient.GetChatRequest{ChatId: chatID})
+	}); err != nil {
 		return fmt.Errorf("无法访问聊天 %d: %w", chatID, err)
 	}
 
 	// 打开聊天，促使 TDLib 主动从服务器同步历史；冷缓存时首批 GetChatHistory 常为空，
 	// 否则可能在历史尚未拉取就误判"已完成"。结束时关闭以释放 TDLib 资源。
-	if _, err := td.OpenChat(ctx, &tdclient.OpenChatRequest{ChatId: chatID}); err != nil {
-		c.logger.Warn("打开聊天失败（继续尝试拉取历史）: %v", err)
+	_, openErr := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Ok, error) {
+		return td.OpenChat(cc, &tdclient.OpenChatRequest{ChatId: chatID})
+	})
+	if openErr != nil {
+		c.logger.Warn("打开聊天失败（继续尝试拉取历史）: %v", openErr)
 	} else {
 		defer func() { _, _ = td.CloseChat(context.Background(), &tdclient.CloseChatRequest{ChatId: chatID}) }()
 	}
@@ -766,15 +867,14 @@ func (c *Client) DownloadHistoryMedia(ctx context.Context, chatID int64, taskID 
 // fetchHistoryPage 拉取一页历史消息，并剔除 Offset:0 时 TDLib 附带返回的
 // FromMessageId 边界消息本身（非首次请求时），避免重复处理及"仅剩边界消息"导致的死循环
 func fetchHistoryPage(ctx context.Context, td *tdclient.Client, chatID, fromMsgID int64, limit int32) ([]*tdclient.Message, error) {
-	mctx, cancel := context.WithTimeout(ctx, metadataTimeout)
-	defer cancel()
-
-	msgs, err := td.GetChatHistory(mctx, &tdclient.GetChatHistoryRequest{
-		ChatId:        chatID,
-		FromMessageId: fromMsgID,
-		Offset:        0,
-		Limit:         limit,
-		OnlyLocal:     false,
+	msgs, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Messages, error) {
+		return td.GetChatHistory(cc, &tdclient.GetChatHistoryRequest{
+			ChatId:        chatID,
+			FromMessageId: fromMsgID,
+			Offset:        0,
+			Limit:         limit,
+			OnlyLocal:     false,
+		})
 	})
 	if err != nil {
 		return nil, fmt.Errorf("获取消息历史失败: %w", err)
@@ -806,10 +906,14 @@ func awaitNextHistoryPage(ctx context.Context, emptyStreak int) (stop bool, err 
 	if emptyStreak >= emptyHistoryRetries {
 		return true, nil
 	}
+	wait := time.Duration(emptyStreak) * emptyHistorySleep
+	if wait > maxEmptyHistorySleep {
+		wait = maxEmptyHistorySleep
+	}
 	select {
 	case <-ctx.Done():
 		return true, ctx.Err()
-	case <-time.After(emptyHistorySleep):
+	case <-time.After(wait):
 	}
 	return false, nil
 }
@@ -848,10 +952,9 @@ func (c *Client) getLastMessageID(ctx context.Context, chatID int64) int64 {
 	if td == nil {
 		return 0
 	}
-	mctx, cancel := context.WithTimeout(ctx, metadataTimeout)
-	defer cancel()
-
-	msgs, err := td.GetChatHistory(mctx, &tdclient.GetChatHistoryRequest{ChatId: chatID, Limit: 1, OnlyLocal: false})
+	msgs, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Messages, error) {
+		return td.GetChatHistory(cc, &tdclient.GetChatHistoryRequest{ChatId: chatID, Limit: 1, OnlyLocal: false})
+	})
 	if err != nil {
 		c.logger.Error("获取最新消息ID失败: %v", err)
 		return 0
@@ -862,34 +965,48 @@ func (c *Client) getLastMessageID(ctx context.Context, chatID int64) int64 {
 	return 0
 }
 
-// checkForNewMessages 拉取近期消息并下载其中超过游标的新媒体
+// checkForNewMessages 拉取并下载游标之后的全部新媒体。逐页向更旧方向翻页，直至某页越过游标或耗尽，
+// 避免单页 Limit(100) 上限在新消息超过 100 条时漏下载（ManualCheckNewMessages 随后会把游标推进到最新）。
 func (c *Client) checkForNewMessages(ctx context.Context, chatID, lastMessageID int64) error {
 	td := c.client()
 	if td == nil {
 		return errors.New("TDLib 未连接")
 	}
-	mctx, cancel := context.WithTimeout(ctx, metadataTimeout)
-	defer cancel()
-
-	msgs, err := td.GetChatHistory(mctx, &tdclient.GetChatHistoryRequest{
-		ChatId: chatID, Limit: DefaultMessageLimit, OnlyLocal: false,
-	})
-	if err != nil {
-		return fmt.Errorf("获取消息历史失败: %w", err)
-	}
 
 	newCount, mediaCount := 0, 0
-	for _, m := range msgs.Messages {
-		if m.Id <= lastMessageID {
-			continue
+	var fromMsgID int64 // 0 表示从最新消息开始
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-		newCount++
-		c.logger.Info("发现新消息 ID: %d, 内容: %s", m.Id, messagePreview(m))
-		if media := c.extractMediaInfo(m); media != nil {
-			mediaCount++
-			c.logger.Info("新消息包含媒体，开始下载: %s", media.FileName)
-			c.downloader.DownloadSingle(ctx, media)
+		page, err := fetchHistoryPage(ctx, td, chatID, fromMsgID, DefaultMessageLimit)
+		if err != nil {
+			return fmt.Errorf("获取消息历史失败: %w", err)
 		}
+		if len(page) == 0 {
+			break
+		}
+
+		reachedCursor := false
+		var oldest int64
+		for _, m := range page {
+			oldest = m.Id
+			if m.Id <= lastMessageID {
+				reachedCursor = true
+				continue
+			}
+			newCount++
+			c.logger.Info("发现新消息 ID: %d, 内容: %s", m.Id, messagePreview(m))
+			if media := c.extractMediaInfo(m); media != nil {
+				mediaCount++
+				c.logger.Info("新消息包含媒体，开始下载: %s", media.FileName)
+				c.downloader.DownloadSingle(ctx, media)
+			}
+		}
+		if reachedCursor {
+			break // 本页已越过游标，更旧的消息此前已处理过
+		}
+		fromMsgID = oldest
 	}
 
 	if newCount > 0 {
@@ -919,11 +1036,17 @@ func (c *Client) onUpdateFile(f *tdclient.File) {
 	if f == nil || f.Local == nil {
 		return
 	}
+	done := f.Local.DownloadedSize
+	total := f.Size
+	if total <= 0 {
+		total = f.ExpectedSize
+	}
+	c.downloader.UpdateProgress(f.Id, done, total, f.Local.IsDownloadingCompleted)
+
 	c.trackMu.Lock()
 	fp := c.fileTrack[f.Id]
 	var logLine string
 	if fp != nil {
-		done := f.Local.DownloadedSize
 		total := fp.total
 		if total <= 0 {
 			total = f.Size

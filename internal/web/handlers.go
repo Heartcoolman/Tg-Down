@@ -30,6 +30,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/tasks", s.handleTasksCreate)
 	mux.HandleFunc("POST /api/tasks/{id}/cancel", s.handleTaskCancel)
 	mux.HandleFunc("POST /api/tasks/{id}/retry", s.handleTaskRetry)
+	mux.HandleFunc("GET /api/download/settings", s.handleDownloadSettings)
+	mux.HandleFunc("POST /api/download/concurrency", s.handleDownloadConcurrency)
+	mux.HandleFunc("POST /api/media/{id}/pause", s.handleMediaPause)
+	mux.HandleFunc("POST /api/media/{id}/resume", s.handleMediaResume)
 	mux.HandleFunc("GET /api/history", s.handleHistoryList)
 	mux.HandleFunc("GET /api/history/stats", s.handleHistoryStats)
 }
@@ -71,6 +75,9 @@ func (s *Server) handleChatsRefresh(w http.ResponseWriter, _ *http.Request) {
 	s.mu.RLock()
 	chats := s.chats
 	s.mu.RUnlock()
+	if chats == nil {
+		chats = []telegram.ChatInfo{}
+	}
 	s.writeJSON(w, chats)
 }
 
@@ -194,6 +201,50 @@ func (s *Server) handleTaskRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, dto)
+}
+
+func (s *Server) handleDownloadSettings(w http.ResponseWriter, _ *http.Request) {
+	s.writeJSON(w, downloadSettingsDTO{
+		MaxConcurrent: s.client.DownloadConcurrency(),
+		Active:        s.client.ActiveDownloadCount(),
+	})
+}
+
+func (s *Server) handleDownloadConcurrency(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		MaxConcurrent int `json:"max_concurrent"`
+	}
+	if !s.decode(w, r, &body) {
+		return
+	}
+	if body.MaxConcurrent <= 0 {
+		s.writeError(w, http.StatusBadRequest, "并发数量必须大于 0")
+		return
+	}
+	if err := s.client.SetDownloadConcurrency(body.MaxConcurrent); err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, downloadSettingsDTO{
+		MaxConcurrent: s.client.DownloadConcurrency(),
+		Active:        s.client.ActiveDownloadCount(),
+	})
+}
+
+func (s *Server) handleMediaPause(w http.ResponseWriter, r *http.Request) {
+	if err := s.client.PauseMedia(r.Context(), r.PathValue("id")); err != nil {
+		s.writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	s.writeOK(w)
+}
+
+func (s *Server) handleMediaResume(w http.ResponseWriter, r *http.Request) {
+	if err := s.client.ResumeMedia(r.PathValue("id")); err != nil {
+		s.writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	s.writeOK(w)
 }
 
 // chatTitle 在已加载的聊天列表中按 ID 查找标题，未找到返回空串

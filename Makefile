@@ -1,6 +1,6 @@
 # Makefile for Telegram Media Downloader (TDLib engine)
 
-.PHONY: all build run clean deps help install config tdlib dev
+.PHONY: all build run clean deps help install config tdlib rust-core dev
 
 # TDLib 安装前缀（scripts/install-tdlib.sh 默认装到这里）
 TDLIB_PREFIX ?= $(HOME)/.tdlib
@@ -25,6 +25,13 @@ build:
 	@go build -o tg-down ./cmd
 	@echo "编译完成！"
 
+# 构建 Rust 业务层 helper（可选；Go 主流程会自动检测并使用，缺失时走 Go 兜底）
+rust-core:
+	@echo "正在编译 Rust 业务层 helper..."
+	@cargo build --manifest-path rust/tg_down_core/Cargo.toml --release
+	@cp rust/tg_down_core/target/release/tg-down-core ./tg-down-core
+	@echo "Rust helper 已生成: ./tg-down-core"
+
 # 运行程序
 run: build
 	@echo "正在运行程序..."
@@ -40,6 +47,7 @@ deps:
 clean:
 	@echo "正在清理构建文件..."
 	@rm -f tg-down tg-down.exe
+	@rm -f tg-down-core tg-down-core.exe
 	@echo "清理完成！"
 
 # 安装到系统路径
@@ -62,6 +70,7 @@ config:
 help:
 	@echo "可用的命令:"
 	@echo "  make tdlib   - 构建并安装 TDLib (首次必需)"
+	@echo "  make rust-core - 构建 Rust 业务层 helper (可选)"
 	@echo "  make build   - 编译程序"
 	@echo "  make run     - 编译并运行程序"
 	@echo "  make deps    - 下载依赖"

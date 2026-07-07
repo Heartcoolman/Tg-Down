@@ -1,6 +1,8 @@
 # 二进制文件
 tg-down
+tg-down-core
 tg-down.exe
+tg-down-core.exe
 *.exe
 
 # 日志文件
@@ -20,6 +22,10 @@ downloads/
 # Go相关
 vendor/
 
+# Rust相关
+target/
+rust/**/target/
+
 # IDE文件
 .vscode/
 .idea/
@@ -34,3 +40,11 @@ Thumbs.db
 sessions/
 session*.json
 *.session
+
+# 本地任务/下载历史数据库（含聊天ID、消息ID、文件名/路径等隐私元数据）
+tg-down.db
+tg-down.db-shm
+tg-down.db-wal
+*.db
+*.db-shm
+*.db-wal

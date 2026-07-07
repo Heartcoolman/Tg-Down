@@ -18,6 +18,8 @@ const (
 	recordQueueBuffer = 256
 	// recordDrainTimeout 是 Manager 关闭时清空 recordCh 剩余积压的最长等待时间
 	recordDrainTimeout = 5 * time.Second
+	// persistInterval 是运行中任务进度周期性落盘的间隔，避免崩溃/硬杀丢失中途进度统计
+	persistInterval = 10 * time.Second
 	// interruptedTaskErrMsg 是重启后无法恢复的排队/运行中任务被回收为 failed 时写入的错误信息
 	interruptedTaskErrMsg = "进程重启，任务中断"
 )
@@ -68,6 +70,13 @@ func NewManager(client ChatDownloader, st *store.Store, log *logger.Logger, maxC
 // 终态任务原样载入；排队中/运行中的任务因进程重启后不再有对应 goroutine 而无法恢复，
 // 一律回收为 failed 并同步持久化，确保 store 与内存状态一致后再对外可见（List/Get）
 func (m *Manager) loadTasks(ctx context.Context) {
+	// 终结上次运行遗留的 "downloading" 历史行，避免其永久滞留污染统计/筛选
+	if n, err := m.store.SweepInterruptedHistory(ctx); err != nil {
+		m.logger.Warn("清理中断的下载历史失败: %v", err)
+	} else if n > 0 {
+		m.logger.Info("已将 %d 条中断的下载历史标记为失败", n)
+	}
+
 	rows, err := m.store.ListTasks(ctx)
 	if err != nil {
 		m.logger.Warn("恢复任务历史失败: %v", err)
@@ -108,11 +117,14 @@ func (m *Manager) Run(ctx context.Context) {
 	m.runCtx = ctx
 	m.mu.Unlock()
 
+	recordStop := make(chan struct{})
 	recordDone := make(chan struct{})
 	go func() {
 		defer close(recordDone)
-		m.recordWriter(ctx)
+		m.recordWriter(recordStop)
 	}()
+
+	go m.persistLoop(ctx)
 
 	var wg sync.WaitGroup
 	for i := 0; i < m.maxConcurrentTasks; i++ {
@@ -123,19 +135,22 @@ func (m *Manager) Run(ctx context.Context) {
 		}()
 	}
 	<-ctx.Done()
+	// 先等所有 history worker 退出（不再产生记录事件），再让 recordWriter 清空剩余积压，
+	// 避免 drain 在生产者仍在发事件时因通道瞬时为空而提前退出，丢失关停时的终态记录。
 	wg.Wait()
+	close(recordStop)
 	<-recordDone
 }
 
 // recordWriter 是唯一的下载记录消费者：按接收顺序（FIFO）串行调用 recorder 完成持久化，
 // 单一生产者-消费者顺序天然保证同一 taskID 的 Started 先于 Completed/Failed 落盘；
-// ctx 取消后转入 drainRecordCh 做有限时间的尽力清空
-func (m *Manager) recordWriter(ctx context.Context) {
+// stop 关闭（由 Run 在所有 worker 退出后触发）时转入 drainRecordCh 清空剩余积压
+func (m *Manager) recordWriter(stop <-chan struct{}) {
 	for {
 		select {
 		case evt := <-m.recordCh:
 			m.recorder(context.Background(), evt)
-		case <-ctx.Done():
+		case <-stop:
 			m.drainRecordCh()
 			return
 		}
@@ -157,6 +172,40 @@ func (m *Manager) drainRecordCh() {
 		default:
 			return
 		}
+	}
+}
+
+// persistLoop 周期性将运行中任务的进度统计落盘，使崩溃/硬杀后恢复的计数接近最新，
+// 并让长期运行的 monitor 任务不再仅在停止时才持久化统计。
+func (m *Manager) persistLoop(ctx context.Context) {
+	ticker := time.NewTicker(persistInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			m.persistRunning()
+		case <-ctx.Done():
+			m.persistRunning() // 关停前再落盘一次
+			return
+		}
+	}
+}
+
+// persistRunning 快照当前处于 running 状态的任务并逐个落盘（不在持有 m.mu 时执行 DB 写入）
+func (m *Manager) persistRunning() {
+	m.mu.Lock()
+	running := make([]*task, 0, len(m.tasks))
+	for _, t := range m.tasks {
+		t.mu.Lock()
+		st := t.status
+		t.mu.Unlock()
+		if st == StatusRunning {
+			running = append(running, t)
+		}
+	}
+	m.mu.Unlock()
+	for _, t := range running {
+		m.persist(t)
 	}
 }
 
@@ -469,7 +518,6 @@ func (m *Manager) notify(t *task) {
 // handleRecordEvent 是注册给 client 的下载记录回调，运行在下载 goroutine（持有下载并发信号量）上，
 // 因此拆成两部分：内存 Stats 更新（廉价的互斥自增）在此同步完成；store 持久化写入则投递给
 // recordCh，交由 recordWriter 异步串行处理，避免下载并发度被本地 DB 写入延迟拖慢。
-// 不调用 onChange（按设计 onChange 只在任务级生命周期转换时触发）。
 func (m *Manager) handleRecordEvent(_ context.Context, evt downloader.RecordEvent) {
 	if evt.Media != nil {
 		m.mu.Lock()
@@ -477,11 +525,15 @@ func (m *Manager) handleRecordEvent(_ context.Context, evt downloader.RecordEven
 		m.mu.Unlock()
 		if t != nil {
 			t.applyRecordEvent(evt)
+			m.notify(t)
 		}
 	}
 	select {
 	case m.recordCh <- evt:
 	default:
-		m.logger.Warn("下载记录持久化队列已满，丢弃一条事件: status=%s", evt.Status)
+		// 队列已满：改为同步落盘而非丢弃，避免丢失 Started 事件后其 Completed 更新命中 0 行
+		// 导致“已下载文件无任何历史记录”的静默数据丢失。仅在突发过载时短暂阻塞下载 goroutine。
+		m.logger.Warn("下载记录持久化队列已满，改为同步写入: status=%s", evt.Status)
+		m.recorder(context.Background(), evt)
 	}
 }

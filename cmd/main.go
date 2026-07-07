@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strconv"
@@ -29,17 +30,13 @@ const (
 
 	// ExitCodeConfigError is the exit code for configuration errors.
 	ExitCodeConfigError = 1
-	// ExitCodeChatError is the exit code for chat selection errors.
-	ExitCodeChatError = 1
-	// ExitCodeClientError is the exit code for client creation errors.
-	ExitCodeClientError = 1
 	// ExitCodeRunError is the exit code for runtime errors.
 	ExitCodeRunError = 1
 	// ExitCodeSessionError is the exit code for session errors.
 	ExitCodeSessionError = 1
 
 	// SignalBufferSize is the buffer size for signal channel.
-	SignalBufferSize = 1
+	SignalBufferSize = 2
 
 	// MinChatChoice is the minimum valid chat choice.
 	MinChatChoice = 1
@@ -65,11 +62,19 @@ func main() {
 	}
 
 	cfg, log := initializeApplication()
+	if err := runApp(cfg, log); err != nil {
+		log.Error("%v", err)
+		os.Exit(ExitCodeRunError)
+	}
+	log.Info("程序退出")
+}
 
+// runApp 承载 CLI 主流程：以 defer 打开/清理资源，出错时返回错误交由 main 决定退出码，
+// 从而让 store.Close/client.Close/cancel 等 defer 在进程退出前正常执行（不再被内联 os.Exit 跳过）。
+func runApp(cfg *config.Config, log *logger.Logger) error {
 	st, err := store.Open(cfg.Store.Path)
 	if err != nil {
-		log.Error("打开数据库失败: %v", err)
-		os.Exit(ExitCodeConfigError)
+		return fmt.Errorf("打开数据库失败: %w", err)
 	}
 	defer func() { _ = st.Close() }()
 
@@ -81,24 +86,26 @@ func main() {
 	// TDLib 客户端始终带更新监听；是否触发实时下载由 targetChatID 控制
 	client := telegram.NewWithUpdates(cfg, log, 0)
 	client.SetRecordFunc(store.NewRecorder(st))
+	defer client.Close() // Close 在未连接(td==nil)时为无操作，认证失败也可安全调用
+
 	log.Info("正在连接到Telegram...")
 	if err := client.Authenticate(ctx); err != nil {
-		log.Error("连接/认证失败: %v", err)
-		os.Exit(ExitCodeRunError)
+		return fmt.Errorf("连接/认证失败: %w", err)
 	}
-	defer client.Close()
 	log.Info("成功连接到Telegram")
 
-	targetChatID := resolveTargetChat(ctx, cfg, client, log)
+	targetChatID, err := resolveTargetChat(ctx, cfg, client, log)
+	if err != nil {
+		return err
+	}
 	if mode == ModeMonitorNewMessages || mode == ModeDownloadAndMonitor {
 		client.SetMonitorTask(fmt.Sprintf("cli-monitor-%d", time.Now().UnixNano()), targetChatID)
 	}
 
 	if err := executeMode(ctx, cancel, client, log, mode, targetChatID); err != nil {
-		log.Error("运行失败: %v", err)
-		os.Exit(ExitCodeRunError)
+		return fmt.Errorf("运行失败: %w", err)
 	}
-	log.Info("程序退出")
+	return nil
 }
 
 // runWebMode 启动 Web 管理端（允许无凭据启动，登录信息可在网页内填写）
@@ -110,17 +117,23 @@ func runWebMode(addr string) {
 	}
 	log := logger.New(cfg.Log.Level)
 	log.Info("Telegram群聊媒体下载器启动 (Web 模式)")
+	if err := runWeb(cfg, log, addr); err != nil {
+		log.Error("%v", err)
+		os.Exit(ExitCodeRunError)
+	}
+	log.Info("程序退出")
+}
 
+// runWeb 承载 Web 模式主流程，以 defer 保证 store 关闭，出错时返回错误交由 runWebMode 决定退出码。
+func runWeb(cfg *config.Config, log *logger.Logger, addr string) error {
 	client := telegram.NewWithUpdates(cfg, log, 0)
 	if client == nil {
-		log.Error("创建客户端失败")
-		os.Exit(ExitCodeClientError)
+		return fmt.Errorf("创建客户端失败")
 	}
 
 	st, err := store.Open(cfg.Store.Path)
 	if err != nil {
-		log.Error("打开数据库失败: %v", err)
-		os.Exit(ExitCodeConfigError)
+		return fmt.Errorf("打开数据库失败: %w", err)
 	}
 	defer func() { _ = st.Close() }()
 
@@ -128,10 +141,9 @@ func runWebMode(addr string) {
 	defer cancel()
 
 	if err := web.New(client, st, log, addr, cfg.Queue.MaxConcurrentTasks).Run(ctx); err != nil {
-		log.Error("Web 服务运行失败: %v", err)
-		os.Exit(ExitCodeRunError)
+		return fmt.Errorf("Web 服务运行失败: %w", err)
 	}
-	log.Info("程序退出")
+	return nil
 }
 
 // initializeApplication 初始化应用程序配置和日志
@@ -160,24 +172,28 @@ func setupSignalHandling(log *logger.Logger) (context.Context, context.CancelFun
 		<-sigChan
 		log.Info("收到中断信号，正在退出...")
 		cancel()
+		// 首个信号取消 ctx 触发优雅退出；若此时正阻塞在 stdin 提示（Scanln 无视 ctx），
+		// 再次收到信号则强制退出，避免进程无法用 Ctrl+C/SIGTERM 结束。
+		<-sigChan
+		log.Warn("再次收到中断信号，强制退出")
+		os.Exit(ExitCodeRunError)
 	}()
 
 	return ctx, cancel
 }
 
 // resolveTargetChat 决定目标聊天ID：优先用配置，否则交互式选择
-func resolveTargetChat(ctx context.Context, cfg *config.Config, client *telegram.Client, log *logger.Logger) int64 {
+func resolveTargetChat(ctx context.Context, cfg *config.Config, client *telegram.Client, log *logger.Logger) (int64, error) {
 	if cfg.Chat.TargetID != 0 {
 		log.Info("使用配置的聊天ID: %d", cfg.Chat.TargetID)
-		return cfg.Chat.TargetID
+		return cfg.Chat.TargetID, nil
 	}
 
 	chatID, err := selectChat(ctx, client, log)
 	if err != nil {
-		log.Error("选择聊天失败: %v", err)
-		os.Exit(ExitCodeChatError)
+		return 0, fmt.Errorf("选择聊天失败: %w", err)
 	}
-	return chatID
+	return chatID, nil
 }
 
 // executeMode 执行指定的操作模式
@@ -271,6 +287,12 @@ func startInteractiveMonitoring(
 
 			var input string
 			if _, scanErr := fmt.Scanln(&input); scanErr != nil {
+				// stdin 关闭（EOF，如 `< /dev/null`、管道耗尽、Ctrl-D）时停止读取，
+				// 否则 Scanln 会立即返回 EOF 形成 100% CPU 忙循环；监控本身由 ctx 继续驱动。
+				if errors.Is(scanErr, io.EOF) {
+					log.Warn("标准输入已关闭，停止交互式命令读取（监控继续运行）")
+					return
+				}
 				continue
 			}
 
@@ -322,7 +344,10 @@ func selectChat(ctx context.Context, client *telegram.Client, log *logger.Logger
 	}
 
 	displayChatList(chats)
-	choice := getUserChatChoice(log, len(chats))
+	choice, err := getUserChatChoice(len(chats))
+	if err != nil {
+		return 0, err
+	}
 
 	selectedChat := chats[choice-1]
 	log.Info("选择了聊天: %s (ID: %d)", selectedChat.Title, selectedChat.ID)
@@ -338,20 +363,18 @@ func displayChatList(chats []telegram.ChatInfo) {
 }
 
 // getUserChatChoice 获取用户的聊天选择
-func getUserChatChoice(log *logger.Logger, maxChoice int) int {
+func getUserChatChoice(maxChoice int) (int, error) {
 	fmt.Print("\n请选择聊天 (输入序号): ")
 	var choice int
 	if _, err := fmt.Scanln(&choice); err != nil {
-		log.Warn("读取输入失败: %v", err)
-		os.Exit(ExitCodeChatError)
+		return 0, fmt.Errorf("读取输入失败: %w", err)
 	}
 
 	if choice < MinChatChoice || choice > maxChoice {
-		log.Error("选择无效")
-		os.Exit(ExitCodeChatError)
+		return 0, fmt.Errorf("选择无效: %d", choice)
 	}
 
-	return choice
+	return choice, nil
 }
 
 // selectMode 选择操作模式

@@ -54,7 +54,10 @@ WHERE history.status NOT IN ('completed', 'failed')`
 }
 
 // UpdateHistoryResult 按 (chat_id, message_id) 更新下载结果；状态为终态
-// （completed/failed）时记录 finished_at；filePath 为空时保留原有路径不覆盖
+// （completed/failed）时记录 finished_at；filePath 为空时保留原有路径不覆盖。
+// 终态守卫：已 completed 的行不允许被后续 failed 事件覆盖（并发下载同一消息时，
+// 落败一方的 RecordFailed 可能晚于胜出一方的 RecordCompleted 到达，文件其实已存在），
+// 但 failed -> completed（重试成功）仍允许，保持重试语义。
 func (s *Store) UpdateHistoryResult(ctx context.Context, chatID, messageID int64, status, reason, filePath string) error {
 	const q = `
 UPDATE history SET
@@ -62,14 +65,34 @@ UPDATE history SET
   reason = ?,
   file_path = COALESCE(NULLIF(?, ''), file_path),
   finished_at = CASE WHEN ? = 1 THEN ? ELSE finished_at END
-WHERE chat_id = ? AND message_id = ?`
+WHERE chat_id = ? AND message_id = ?
+  AND NOT (status = 'completed' AND ? = 'failed')`
 
 	isTerminal := status == "completed" || status == "failed"
-	res, err := s.execContext(ctx, q, status, nullString(reason), filePath, isTerminal, time.Now().Unix(), chatID, messageID)
+	res, err := s.execContext(ctx, q, status, nullString(reason), filePath, isTerminal, time.Now().Unix(), chatID, messageID, status)
 	if err != nil {
 		return fmt.Errorf("更新下载历史失败: %w", err)
 	}
 	return checkRowsAffected(res, "下载历史", fmt.Sprintf("chat_id=%d,message_id=%d", chatID, messageID))
+}
+
+// SweepInterruptedHistory 将所有仍停留在 "downloading" 的历史行终结为 "failed"，
+// 供进程启动时调用一次：崩溃/被杀/关停会遗留永不终态的 "downloading" 行（其 RecordCompleted/
+// RecordFailed 事件丢失），污染统计与状态筛选。返回被清理的行数。
+func (s *Store) SweepInterruptedHistory(ctx context.Context) (int64, error) {
+	const q = `
+UPDATE history SET
+  status = 'failed',
+  reason = '进程重启中断',
+  finished_at = ?
+WHERE status = 'downloading'`
+
+	res, err := s.execContext(ctx, q, time.Now().Unix())
+	if err != nil {
+		return 0, fmt.Errorf("清理中断的下载历史失败: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // historyFilterClause 根据过滤条件构建 WHERE 子句（不含 "WHERE" 关键字）与对应参数，
