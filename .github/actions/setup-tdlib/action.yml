@@ -20,7 +20,17 @@ runs:
 
     - name: Export CGO env
       shell: bash
+      # go-tdlib master 起 darwin 无内置链接指令、linux 内置静态列表缺 tde2e，
+      # 统一在此补全 TDLib 静态库；macOS 另需 Homebrew OpenSSL 路径。
       run: |
+        TDLIB_STATIC_LIBS="-ltdjson_static -ltdjson_private -ltdclient -ltdcore -ltde2e -ltdmtproto -ltdactor -ltdapi -ltddb -ltdsqlite -ltdnet -ltdutils -lstdc++ -lssl -lcrypto -ldl -lz -lm"
+        CFLAGS="-I$HOME/.tdlib/include"
+        LDFLAGS="-L$HOME/.tdlib/lib -Wl,-rpath,$HOME/.tdlib/lib"
+        if [ "$(uname -s)" = "Darwin" ]; then
+          OPENSSL_PREFIX="$(brew --prefix openssl@3)"
+          CFLAGS="$CFLAGS -I$OPENSSL_PREFIX/include"
+          LDFLAGS="$LDFLAGS -L$OPENSSL_PREFIX/lib"
+        fi
         echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
-        echo "CGO_CFLAGS=-I$HOME/.tdlib/include" >> "$GITHUB_ENV"
-        echo "CGO_LDFLAGS=-L$HOME/.tdlib/lib -Wl,-rpath,$HOME/.tdlib/lib" >> "$GITHUB_ENV"
+        echo "CGO_CFLAGS=$CFLAGS" >> "$GITHUB_ENV"
+        echo "CGO_LDFLAGS=$LDFLAGS $TDLIB_STATIC_LIBS" >> "$GITHUB_ENV"

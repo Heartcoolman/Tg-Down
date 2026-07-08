@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/joho/godotenv v1.5.1
-	github.com/zelenin/go-tdlib v1.0.0-beta1
+	github.com/zelenin/go-tdlib v1.0.0-beta1.0.20260509025013-0dd3ea652682
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.53.0
 )

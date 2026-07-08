@@ -108,7 +108,6 @@ type Client struct {
 
 	targetChatID  atomic.Int64 // 实时监控目标（0 = 不监控）
 	monitorTaskID atomic.Value // 实时监控关联的任务ID（string，""=无关联任务）
-	lastMessageID int64        // 手动轮询游标
 
 	mu       sync.Mutex
 	td       *tdclient.Client // Connect 后才有值
@@ -248,9 +247,11 @@ func (c *Client) client() *tdclient.Client {
 }
 
 // tdCall 在后台 goroutine 中以不可取消的 background ctx 执行一次 TDLib 请求，规避
-// go-tdlib v1.0.0-beta1 绑定的 Send 在传入 ctx 取消时 close(catcher) 与接收 goroutine
-// 并发发送引发的 "send on closed channel" 进程级崩溃。本函数仍在 ctx 取消或超时后即时返回；
-// 后台 goroutine 会在 TDLib 最终响应（或 Close 中止）后自然退出，其响应被安全丢弃。
+// go-tdlib 绑定的 Send 在传入 ctx 取消时 close(catcher) 与接收 goroutine
+// 并发发送引发的 "send on closed channel" 进程级崩溃（上游 issue #161，
+// 截至 master 0dd3ea6 / 2026-07 复核仍未修复，升级绑定时需重新确认）。
+// 本函数仍在 ctx 取消或超时后即时返回；后台 goroutine 会在 TDLib 最终响应
+//（或 Close 中止）后自然退出，其响应被安全丢弃。
 func tdCall[T any](ctx context.Context, timeout time.Duration, fn func(context.Context) (T, error)) (T, error) {
 	type outcome struct {
 		v   T
@@ -1129,105 +1130,6 @@ func awaitNextHistoryPage(ctx context.Context, emptyStreak int) (stop bool, err 
 	case <-time.After(wait):
 	}
 	return false, nil
-}
-
-// ManualCheckNewMessages 手动检查新消息（CLI 监控模式）
-func (c *Client) ManualCheckNewMessages(ctx context.Context, chatID int64) error {
-	c.logger.Info("开始手动检查聊天 %d 的新消息", chatID)
-
-	latestID := c.getLastMessageID(ctx, chatID)
-	if latestID == 0 {
-		return errors.New("无法获取最新消息ID")
-	}
-	c.logger.Info("当前最新消息ID: %d", latestID)
-
-	if c.lastMessageID == 0 {
-		c.lastMessageID = latestID
-		c.logger.Info("初始化 lastMessageID 为: %d", c.lastMessageID)
-		return nil
-	}
-	if latestID <= c.lastMessageID {
-		c.logger.Info("没有新消息")
-		return nil
-	}
-
-	c.logger.Info("发现新消息！从 %d 到 %d", c.lastMessageID, latestID)
-	if err := c.checkForNewMessages(ctx, chatID, c.lastMessageID); err != nil {
-		return fmt.Errorf("检查新消息失败: %w", err)
-	}
-	c.lastMessageID = latestID
-	return nil
-}
-
-// getLastMessageID 获取聊天最新消息ID
-func (c *Client) getLastMessageID(ctx context.Context, chatID int64) int64 {
-	td := c.client()
-	if td == nil {
-		return 0
-	}
-	msgs, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Messages, error) {
-		return td.GetChatHistory(cc, &tdclient.GetChatHistoryRequest{ChatId: chatID, Limit: 1, OnlyLocal: false})
-	})
-	if err != nil {
-		c.logger.Error("获取最新消息ID失败: %v", err)
-		return 0
-	}
-	if len(msgs.Messages) > 0 {
-		return msgs.Messages[0].Id
-	}
-	return 0
-}
-
-// checkForNewMessages 拉取并下载游标之后的全部新媒体。逐页向更旧方向翻页，直至某页越过游标或耗尽，
-// 避免单页 Limit(100) 上限在新消息超过 100 条时漏下载（ManualCheckNewMessages 随后会把游标推进到最新）。
-func (c *Client) checkForNewMessages(ctx context.Context, chatID, lastMessageID int64) error {
-	td := c.client()
-	if td == nil {
-		return errors.New("TDLib 未连接")
-	}
-
-	newCount, mediaCount := 0, 0
-	var fromMsgID int64 // 0 表示从最新消息开始
-	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		page, err := fetchHistoryPage(ctx, td, chatID, fromMsgID, DefaultMessageLimit)
-		if err != nil {
-			return fmt.Errorf("获取消息历史失败: %w", err)
-		}
-		if len(page) == 0 {
-			break
-		}
-
-		reachedCursor := false
-		var oldest int64
-		for _, m := range page {
-			oldest = m.Id
-			if m.Id <= lastMessageID {
-				reachedCursor = true
-				continue
-			}
-			newCount++
-			c.logger.Info("发现新消息 ID: %d, 内容: %s", m.Id, messagePreview(m))
-			if media := c.extractMediaInfo(m); media != nil {
-				mediaCount++
-				c.logger.Info("新消息包含媒体，开始下载: %s", media.FileName)
-				c.downloader.DownloadSingle(ctx, media)
-			}
-		}
-		if reachedCursor {
-			break // 本页已越过游标，更旧的消息此前已处理过
-		}
-		fromMsgID = oldest
-	}
-
-	if newCount > 0 {
-		c.logger.Info("本次检查发现 %d 条新消息，其中 %d 条包含媒体", newCount, mediaCount)
-	} else {
-		c.logger.Debug("本次检查未发现新消息")
-	}
-	return nil
 }
 
 // --- TDLib 更新处理 ---

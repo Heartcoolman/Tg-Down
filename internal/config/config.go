@@ -22,8 +22,6 @@ const (
 	// 默认下载配置
 	DefaultMaxConcurrent = 5
 	DefaultBatchSize     = 100
-	DefaultChunkSize     = 512 // 512KB
-	DefaultMaxWorkers    = 4
 	// DefaultPartitionSize 是历史下载的在途媒体上限（扫描最多领先下载的数量）
 	DefaultPartitionSize = 100
 
@@ -31,10 +29,6 @@ const (
 	DefaultMaxRetries = 3
 	DefaultBaseDelay  = 1  // 1秒
 	DefaultMaxDelay   = 30 // 30秒
-
-	// 默认速率限制配置
-	DefaultRequestsPerSecond = 1.0 // 1 request per second
-	DefaultBurstSize         = 2
 
 	// 默认队列配置
 	DefaultMaxConcurrentTasks = 1
@@ -47,23 +41,16 @@ const (
 	FloatBitSize = 64
 )
 
-// validChunkSizes 列出合法的分片大小 (KB)：均为 4 的倍数且能整除 1024，
-// 满足 Telegram upload.getFile 对 limit 的约束。
-var validChunkSizes = map[int]bool{
-	4: true, 8: true, 16: true, 32: true, 64: true, 128: true, 256: true, 512: true,
-}
-
 // Config 应用配置结构
 type Config struct {
-	API       APIConfig       `yaml:"api"`
-	Download  DownloadConfig  `yaml:"download"`
-	Chat      ChatConfig      `yaml:"chat"`
-	Log       LogConfig       `yaml:"log"`
-	Session   SessionConfig   `yaml:"session"`
-	Retry     RetryConfig     `yaml:"retry"`
-	RateLimit RateLimitConfig `yaml:"rate_limit"`
-	Queue     QueueConfig     `yaml:"queue"`
-	Store     StoreConfig     `yaml:"store"`
+	API      APIConfig      `yaml:"api"`
+	Download DownloadConfig `yaml:"download"`
+	Chat     ChatConfig     `yaml:"chat"`
+	Log      LogConfig      `yaml:"log"`
+	Session  SessionConfig  `yaml:"session"`
+	Retry    RetryConfig    `yaml:"retry"`
+	Queue    QueueConfig    `yaml:"queue"`
+	Store    StoreConfig    `yaml:"store"`
 }
 
 // APIConfig Telegram API配置
@@ -79,10 +66,6 @@ type DownloadConfig struct {
 	MaxConcurrent int    `yaml:"max_concurrent"` // 同时下载的文件数
 	BatchSize     int    `yaml:"batch_size"`     // 每批拉取的历史消息数
 	PartitionSize int    `yaml:"partition_size"` // 历史下载在途媒体上限（扫描最多领先下载的数量）
-	// Deprecated: 切换到 TDLib 引擎后失效。TDLib 自管分片大小与单文件并行度。保留仅为向后兼容。
-	ChunkSize int `yaml:"chunk_size"`
-	// Deprecated: 切换到 TDLib 引擎后失效。TDLib 自管单文件下载并行度。保留仅为向后兼容。
-	MaxWorkers int `yaml:"max_workers"`
 	// DisableClassifyByType 为 true 时关闭按媒体类型归档（默认归档开启）
 	DisableClassifyByType bool `yaml:"disable_classify_by_type"`
 }
@@ -92,14 +75,6 @@ type RetryConfig struct {
 	MaxRetries int `yaml:"max_retries"` // 最大重试次数
 	BaseDelay  int `yaml:"base_delay"`  // 基础延迟 (秒)
 	MaxDelay   int `yaml:"max_delay"`   // 最大延迟 (秒)
-}
-
-// RateLimitConfig 速率限制配置
-//
-// Deprecated: 切换到 TDLib 引擎后失效。TDLib 内部处理 flood-wait 与限流。保留仅为向后兼容。
-type RateLimitConfig struct {
-	RequestsPerSecond float64 `yaml:"requests_per_second"` // 每秒请求数
-	BurstSize         int     `yaml:"burst_size"`          // 突发大小
 }
 
 // ChatConfig 聊天配置
@@ -150,6 +125,7 @@ func load(requireAPI bool) (*Config, error) {
 
 	// 从环境变量覆盖配置
 	loadFromEnv(config)
+	warnRemovedEnv()
 
 	// 设置默认值
 	setDefaults(config)
@@ -184,7 +160,41 @@ func loadFromYAML(config *Config) error {
 		return fmt.Errorf("解析配置文件失败: %w", err)
 	}
 
+	warnRemovedYAMLKeys(data)
 	return nil
+}
+
+// warnRemovedYAMLKeys 检测 v2.0 移除的配置键并警告（yaml.v3 对未知键静默丢弃，
+// 不显式检测用户无从得知配置已失效）。配置加载先于 logger 初始化，直接写 stderr。
+func warnRemovedYAMLKeys(data []byte) {
+	var raw map[string]any
+	if yaml.Unmarshal(data, &raw) != nil {
+		return
+	}
+	if _, ok := raw["rate_limit"]; ok {
+		warnRemoved("配置项 rate_limit.* 已在 v2.0 移除（TDLib 内部处理限流），请从 config.yaml 删除")
+	}
+	if dl, ok := raw["download"].(map[string]any); ok {
+		if _, ok := dl["chunk_size"]; ok {
+			warnRemoved("配置项 download.chunk_size 已在 v2.0 移除（TDLib 自管分片），请从 config.yaml 删除")
+		}
+		if _, ok := dl["max_workers"]; ok {
+			warnRemoved("配置项 download.max_workers 已在 v2.0 移除（TDLib 自管单文件并行度），请从 config.yaml 删除")
+		}
+	}
+}
+
+// warnRemovedEnv 检测 v2.0 移除的环境变量并警告
+func warnRemovedEnv() {
+	for _, name := range []string{"CHUNK_SIZE", "MAX_WORKERS", "REQUESTS_PER_SECOND", "BURST_SIZE"} {
+		if os.Getenv(name) != "" {
+			warnRemoved(fmt.Sprintf("环境变量 %s 已在 v2.0 移除且不再生效", name))
+		}
+	}
+}
+
+func warnRemoved(msg string) {
+	fmt.Fprintf(os.Stderr, "[配置警告] %s\n", msg)
 }
 
 // loadFromEnv 从环境变量加载配置
@@ -195,7 +205,6 @@ func loadFromEnv(config *Config) {
 	loadLogConfig(config)
 	loadSessionConfig(config)
 	loadRetryConfig(config)
-	loadRateLimitConfig(config)
 	loadQueueConfig(config)
 	loadStoreConfig(config)
 }
@@ -238,18 +247,6 @@ func loadDownloadConfig(config *Config) {
 	if partitionSize := os.Getenv("PARTITION_SIZE"); partitionSize != "" {
 		if partition, err := strconv.Atoi(partitionSize); err == nil {
 			config.Download.PartitionSize = partition
-		}
-	}
-
-	if chunkSize := os.Getenv("CHUNK_SIZE"); chunkSize != "" {
-		if chunk, err := strconv.Atoi(chunkSize); err == nil {
-			config.Download.ChunkSize = chunk
-		}
-	}
-
-	if maxWorkers := os.Getenv("MAX_WORKERS"); maxWorkers != "" {
-		if workers, err := strconv.Atoi(maxWorkers); err == nil {
-			config.Download.MaxWorkers = workers
 		}
 	}
 }
@@ -298,21 +295,6 @@ func loadRetryConfig(config *Config) {
 	}
 }
 
-// loadRateLimitConfig 加载速率限制配置
-func loadRateLimitConfig(config *Config) {
-	if requestsPerSecond := os.Getenv("REQUESTS_PER_SECOND"); requestsPerSecond != "" {
-		if rps, err := strconv.ParseFloat(requestsPerSecond, FloatBitSize); err == nil {
-			config.RateLimit.RequestsPerSecond = rps
-		}
-	}
-
-	if burstSize := os.Getenv("BURST_SIZE"); burstSize != "" {
-		if burst, err := strconv.Atoi(burstSize); err == nil {
-			config.RateLimit.BurstSize = burst
-		}
-	}
-}
-
 // loadQueueConfig 加载队列配置
 func loadQueueConfig(config *Config) {
 	if maxConcurrentTasks := os.Getenv("MAX_CONCURRENT_TASKS"); maxConcurrentTasks != "" {
@@ -345,13 +327,6 @@ func setDefaults(config *Config) {
 	if config.Download.PartitionSize <= 0 {
 		config.Download.PartitionSize = DefaultPartitionSize
 	}
-	// chunk_size 必须是合法的 Telegram 分片大小：4KB 的倍数且能整除 1MB，否则回退默认值
-	if !validChunkSizes[config.Download.ChunkSize] {
-		config.Download.ChunkSize = DefaultChunkSize
-	}
-	if config.Download.MaxWorkers <= 0 {
-		config.Download.MaxWorkers = DefaultMaxWorkers
-	}
 
 	if config.Retry.MaxRetries <= 0 {
 		config.Retry.MaxRetries = DefaultMaxRetries
@@ -361,13 +336,6 @@ func setDefaults(config *Config) {
 	}
 	if config.Retry.MaxDelay <= 0 {
 		config.Retry.MaxDelay = DefaultMaxDelay
-	}
-
-	if config.RateLimit.RequestsPerSecond <= 0 {
-		config.RateLimit.RequestsPerSecond = DefaultRequestsPerSecond
-	}
-	if config.RateLimit.BurstSize <= 0 {
-		config.RateLimit.BurstSize = DefaultBurstSize
 	}
 
 	if config.Log.Level == "" {

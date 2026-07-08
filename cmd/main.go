@@ -294,7 +294,6 @@ func startInteractiveMonitoring(
 	go func() {
 		fmt.Println("\n监控已启动！")
 		fmt.Println("输入命令:")
-		fmt.Println("  'check' - 手动检查新消息")
 		fmt.Println("  'status' - 查看监控状态")
 		fmt.Println("  'quit' - 退出程序")
 		fmt.Print("> ")
@@ -317,7 +316,7 @@ func startInteractiveMonitoring(
 				continue
 			}
 
-			if !handleInteractiveCommand(ctx, cancel, client, log, targetChatID, input) {
+			if !handleInteractiveCommand(cancel, log, targetChatID, input) {
 				return
 			}
 			fmt.Print("> ")
@@ -327,19 +326,12 @@ func startInteractiveMonitoring(
 
 // handleInteractiveCommand 处理交互式命令
 func handleInteractiveCommand(
-	ctx context.Context,
 	cancel context.CancelFunc,
-	client *telegram.Client,
 	log *logger.Logger,
 	targetChatID int64,
 	input string,
 ) bool {
 	switch input {
-	case "check":
-		log.Info("手动检查新消息...")
-		if err := client.ManualCheckNewMessages(ctx, targetChatID); err != nil {
-			log.Error("手动检查失败: %v", err)
-		}
 	case "status":
 		log.Info("监控状态: 正在运行，目标聊天ID: %d", targetChatID)
 	case "quit":
@@ -347,7 +339,7 @@ func handleInteractiveCommand(
 		cancel()
 		return false
 	default:
-		fmt.Println("未知命令，请输入 'check', 'status' 或 'quit'")
+		fmt.Println("未知命令，请输入 'status' 或 'quit'")
 	}
 	return true
 }

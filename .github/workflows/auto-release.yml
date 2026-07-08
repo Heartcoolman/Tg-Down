@@ -1,11 +1,8 @@
 name: Auto Release
+# v2.0 起改为手动触发：发布统一由人工打 tag（或手动运行本工作流）驱动，
+# 避免带 feat/breaking 关键词的合并在开发期间自动铸出意外版本。
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
+  workflow_dispatch:
 
 permissions:
   contents: write

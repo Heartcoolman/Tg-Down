@@ -1,8 +1,6 @@
 # 二进制文件
 tg-down
-tg-down-core
 tg-down.exe
-tg-down-core.exe
 *.exe
 
 # 日志文件
@@ -21,10 +19,6 @@ downloads/
 
 # Go相关
 vendor/
-
-# Rust相关
-target/
-rust/**/target/
 
 # IDE文件
 .vscode/
