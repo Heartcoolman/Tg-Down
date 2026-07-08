@@ -58,7 +58,8 @@ jobs:
           mkdir -p dist/pkg/lib
           # 覆盖 setup-tdlib 导出的 rpath：发布包在用户机器上从 $ORIGIN/lib 找动态依赖
           export CGO_LDFLAGS="-L$HOME/.tdlib/lib -Wl,-rpath,\$ORIGIN/lib -ltdjson_static -ltdjson_private -ltdclient -ltdcore -ltde2e -ltdmtproto -ltdactor -ltdapi -ltddb -ltdsqlite -ltdnet -ltdutils -lstdc++ -lssl -lcrypto -ldl -lz -lm"
-          go build -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o dist/pkg/tg-down ./cmd
+          # -buildvcs=false：容器内 git 目录属主不匹配会使 VCS stamping 失败，版本号已由 ldflags 注入
+          go build -buildvcs=false -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o dist/pkg/tg-down ./cmd
           # 捆绑 OpenSSL 1.1：debian:11 之后的发行版已不再提供该版本
           cp /usr/lib/x86_64-linux-gnu/libssl.so.1.1 /usr/lib/x86_64-linux-gnu/libcrypto.so.1.1 dist/pkg/lib/
           objdump -T dist/pkg/tg-down | grep -o 'GLIBC_2\.[0-9.]*' | sort -Vu | tail -1
@@ -67,7 +68,7 @@ jobs:
         if: matrix.name == 'darwin-arm64'
         run: |
           mkdir -p dist/pkg
-          go build -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o dist/pkg/tg-down ./cmd
+          go build -buildvcs=false -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o dist/pkg/tg-down ./cmd
 
       - name: Assemble package
         run: |
