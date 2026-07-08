@@ -118,7 +118,7 @@ type Client struct {
 	trackMu   sync.Mutex
 	fileTrack map[int32]*fileProgress // TDLib file id -> 进度信息（用于日志）
 
-	scanProgressFunc func(taskID string, scannedMessages, foundMedia int64) // 历史扫描进度回调（启动时注册，无并发写）
+	scanProgressFunc func(taskID string, scannedMessages, foundMedia, scanCursor int64) // 历史扫描进度回调（启动时注册，无并发写）
 }
 
 // fileProgress 跟踪单个文件的下载进度（仅用于日志输出）
@@ -251,7 +251,7 @@ func (c *Client) client() *tdclient.Client {
 // 并发发送引发的 "send on closed channel" 进程级崩溃（上游 issue #161，
 // 截至 master 0dd3ea6 / 2026-07 复核仍未修复，升级绑定时需重新确认）。
 // 本函数仍在 ctx 取消或超时后即时返回；后台 goroutine 会在 TDLib 最终响应
-//（或 Close 中止）后自然退出，其响应被安全丢弃。
+// （或 Close 中止）后自然退出，其响应被安全丢弃。
 func tdCall[T any](ctx context.Context, timeout time.Duration, fn func(context.Context) (T, error)) (T, error) {
 	type outcome struct {
 		v   T
@@ -487,13 +487,18 @@ func (c *Client) SetDownloadConcurrency(n int) error {
 }
 
 // SetScanProgressFunc 设置历史扫描进度回调；须在 Connect/任务运行前注册
-func (c *Client) SetScanProgressFunc(fn func(taskID string, scannedMessages, foundMedia int64)) {
+func (c *Client) SetScanProgressFunc(fn func(taskID string, scannedMessages, foundMedia, scanCursor int64)) {
 	c.scanProgressFunc = fn
 }
 
 // SetRecordFunc 设置下载记录回调，用于持久化下载历史
 func (c *Client) SetRecordFunc(fn func(context.Context, downloader.RecordEvent)) {
 	c.downloader.SetRecordFunc(fn)
+}
+
+// SetDuplicateLookupFunc 设置内容级去重查找回调（按 unique_id 返回既有文件路径）
+func (c *Client) SetDuplicateLookupFunc(fn func(ctx context.Context, uniqueID string) (existingPath string, ok bool)) {
+	c.downloader.SetDuplicateLookupFunc(fn)
 }
 
 // Phone 返回配置的手机号
@@ -746,9 +751,14 @@ func mediaFromFile(m *tdclient.Message, f *tdclient.File, mediaType, fileName, m
 	if f == nil {
 		return nil
 	}
+	var uniqueID string
+	if f.Remote != nil {
+		uniqueID = f.Remote.UniqueId
+	}
 	return &downloader.MediaInfo{
 		MessageID: m.Id,
 		TDFileID:  f.Id,
+		UniqueID:  uniqueID,
 		MediaType: mediaType,
 		FileName:  fileName,
 		FileSize:  fileSize(f),
@@ -955,12 +965,17 @@ func (c *Client) CountHistoryMedia(ctx context.Context, chatID int64) (int64, er
 	return total, nil
 }
 
-func (c *Client) DownloadHistoryMedia(ctx context.Context, chatID int64, taskID string) error {
+func (c *Client) DownloadHistoryMedia(ctx context.Context, spec downloader.HistorySpec) error {
 	td := c.client()
 	if td == nil {
 		return errors.New("TDLib 未连接")
 	}
-	c.logger.Info("开始下载聊天 %d 的历史媒体文件", chatID)
+	chatID, taskID := spec.ChatID, spec.TaskID
+	if spec.FromMessageID > 0 {
+		c.logger.Info("继续下载聊天 %d 的历史媒体文件（游标 %d）", chatID, spec.FromMessageID)
+	} else {
+		c.logger.Info("开始下载聊天 %d 的历史媒体文件", chatID)
+	}
 
 	if _, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Chat, error) {
 		return td.GetChat(cc, &tdclient.GetChatRequest{ChatId: chatID})
@@ -995,12 +1010,38 @@ func (c *Client) DownloadHistoryMedia(ctx context.Context, chatID int64, taskID 
 	var (
 		wg              sync.WaitGroup
 		sem             = make(chan struct{}, partitionSize)
-		fromMsgID       int64
+		fromMsgID       = spec.FromMessageID // 0 = 从最新开始；>0 = 断点续扫
 		scannedMessages int64
 		foundMedia      int64
 	)
 	emptyStreak := 0
 	lastScanLog := time.Now()
+
+	// dispatch 将单个媒体投入下载流水线（受 sem 在途上限约束）
+	dispatch := func(mi *downloader.MediaInfo) error {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := c.downloader.DownloadMedia(ctx, mi); err != nil {
+				c.logger.Error("下载媒体文件失败: %v", err)
+			}
+		}()
+		return nil
+	}
+
+	// 恢复任务先补下被重启清扫的中断行：这些消息比游标更新，续扫不会再经过
+	if len(spec.RetryMessageIDs) > 0 {
+		if err := c.retryInterruptedMessages(ctx, td, spec, dispatch); err != nil {
+			wg.Wait()
+			return err
+		}
+	}
 
 	scanErr := func() error {
 		for {
@@ -1030,23 +1071,15 @@ func (c *Client) DownloadHistoryMedia(ctx context.Context, chatID int64, taskID 
 			fromMsgID = lastMsgID // 推进到本页最旧消息
 			scannedMessages += int64(len(pageMsgs))
 			foundMedia += int64(len(media))
-			c.reportScanProgress(taskID, scannedMessages, foundMedia)
+			// 游标随页推进即上报持久化；本页/在途媒体若在落盘后被杀，
+			// 由启动清扫（interrupted）+ 恢复补下（RetryMessageIDs）兜底，不会漏
+			c.reportScanProgress(taskID, scannedMessages, foundMedia, fromMsgID)
 
 			c.downloader.PlanBatch(media)
 			for _, m := range media {
-				select {
-				case sem <- struct{}{}:
-				case <-ctx.Done():
-					return ctx.Err()
+				if err := dispatch(m); err != nil {
+					return err
 				}
-				wg.Add(1)
-				go func(mi *downloader.MediaInfo) {
-					defer wg.Done()
-					defer func() { <-sem }()
-					if err := c.downloader.DownloadMedia(ctx, mi); err != nil {
-						c.logger.Error("下载媒体文件失败: %v", err)
-					}
-				}(m)
 			}
 
 			if time.Since(lastScanLog) >= scanLogInterval {
@@ -1070,12 +1103,43 @@ func (c *Client) DownloadHistoryMedia(ctx context.Context, chatID int64, taskID 
 	return nil
 }
 
-// reportScanProgress 上报历史扫描进度；未注册回调（CLI 模式）或无任务 ID 时静默
-func (c *Client) reportScanProgress(taskID string, scannedMessages, foundMedia int64) {
+// retryInterruptedMessages 逐条重取并补下恢复任务的中断消息；消息已删除或无媒体时记警告跳过
+func (c *Client) retryInterruptedMessages(
+	ctx context.Context, td *tdclient.Client, spec downloader.HistorySpec,
+	dispatch func(*downloader.MediaInfo) error,
+) error {
+	var batch []*downloader.MediaInfo
+	for _, msgID := range spec.RetryMessageIDs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		msg, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Message, error) {
+			return td.GetMessage(cc, &tdclient.GetMessageRequest{ChatId: spec.ChatID, MessageId: msgID})
+		})
+		if err != nil {
+			c.logger.Warn("补下中断媒体失败（消息 %d 可能已删除）: %v", msgID, err)
+			continue
+		}
+		if media := c.extractMediaInfo(msg); media != nil {
+			media.TaskID = spec.TaskID
+			batch = append(batch, media)
+		}
+	}
+	c.downloader.PlanBatch(batch)
+	for _, m := range batch {
+		if err := dispatch(m); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// reportScanProgress 上报历史扫描进度与游标；未注册回调（CLI 模式）或无任务 ID 时静默
+func (c *Client) reportScanProgress(taskID string, scannedMessages, foundMedia, scanCursor int64) {
 	if c.scanProgressFunc == nil || taskID == "" {
 		return
 	}
-	c.scanProgressFunc(taskID, scannedMessages, foundMedia)
+	c.scanProgressFunc(taskID, scannedMessages, foundMedia, scanCursor)
 }
 
 // fetchHistoryPage 拉取一页历史消息，并剔除 Offset:0 时 TDLib 附带返回的

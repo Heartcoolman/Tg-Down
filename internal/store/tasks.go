@@ -18,13 +18,15 @@ var terminalTaskStatuses = map[string]bool{
 func (s *Store) CreateTask(ctx context.Context, t *TaskRow) error {
 	const q = `
 INSERT INTO tasks (id, kind, chat_id, chat_title, status, created_at, started_at, finished_at,
-                    error, total, downloaded, failed, skipped, total_size, downloaded_size, expected_total)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                    error, total, downloaded, failed, skipped, total_size, downloaded_size, expected_total,
+                    scan_cursor, attempts)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err := s.execContext(ctx, q,
 		t.ID, t.Kind, t.ChatID, t.ChatTitle, t.Status, timeToUnix(t.CreatedAt),
 		timePtrToUnix(t.StartedAt), timePtrToUnix(t.FinishedAt), nullString(t.Error),
 		t.Total, t.Downloaded, t.Failed, t.Skipped, t.TotalSize, t.DownloadedSize, t.ExpectedTotal,
+		t.ScanCursor, t.Attempts,
 	)
 	if err != nil {
 		return fmt.Errorf("创建任务失败: %w", err)
@@ -54,17 +56,23 @@ WHERE id = ?`
 	return checkRowsAffected(res, "任务", id)
 }
 
-// UpdateTaskProgress 更新任务的进度统计
-func (s *Store) UpdateTaskProgress(
-	ctx context.Context, id string, total, downloaded, failed, skipped int,
-	totalSize, downloadedSize, expectedTotal int64,
-) error {
+// TaskProgress 是 UpdateTaskProgress 的进度快照参数
+type TaskProgress struct {
+	Total, Downloaded, Failed, Skipped int
+	TotalSize, DownloadedSize          int64
+	ExpectedTotal, ScanCursor          int64
+	Attempts                           int
+}
+
+// UpdateTaskProgress 更新任务的进度统计与扫描游标
+func (s *Store) UpdateTaskProgress(ctx context.Context, id string, p TaskProgress) error {
 	const q = `
 UPDATE tasks SET total = ?, downloaded = ?, failed = ?, skipped = ?, total_size = ?, downloaded_size = ?,
-  expected_total = ?
+  expected_total = ?, scan_cursor = ?, attempts = ?
 WHERE id = ?`
 
-	res, err := s.execContext(ctx, q, total, downloaded, failed, skipped, totalSize, downloadedSize, expectedTotal, id)
+	res, err := s.execContext(ctx, q, p.Total, p.Downloaded, p.Failed, p.Skipped, p.TotalSize,
+		p.DownloadedSize, p.ExpectedTotal, p.ScanCursor, p.Attempts, id)
 	if err != nil {
 		return fmt.Errorf("更新任务进度失败: %w", err)
 	}
@@ -75,7 +83,8 @@ WHERE id = ?`
 func (s *Store) ListTasks(ctx context.Context) ([]*TaskRow, error) {
 	const q = `
 SELECT id, kind, chat_id, chat_title, status, created_at, started_at, finished_at,
-       error, total, downloaded, failed, skipped, total_size, downloaded_size, expected_total
+       error, total, downloaded, failed, skipped, total_size, downloaded_size, expected_total,
+       scan_cursor, attempts
 FROM tasks ORDER BY created_at DESC`
 
 	rows, err := s.db.QueryContext(ctx, q)
@@ -102,7 +111,8 @@ FROM tasks ORDER BY created_at DESC`
 func (s *Store) GetTask(ctx context.Context, id string) (*TaskRow, error) {
 	const q = `
 SELECT id, kind, chat_id, chat_title, status, created_at, started_at, finished_at,
-       error, total, downloaded, failed, skipped, total_size, downloaded_size, expected_total
+       error, total, downloaded, failed, skipped, total_size, downloaded_size, expected_total,
+       scan_cursor, attempts
 FROM tasks WHERE id = ?`
 
 	row := s.db.QueryRowContext(ctx, q, id)
@@ -128,7 +138,7 @@ func scanTaskRow(row scanner) (*TaskRow, error) {
 	if err := row.Scan(
 		&t.ID, &t.Kind, &t.ChatID, &chatTitle, &t.Status, &createdAt, &startedAt, &finishedAt,
 		&errMsg, &t.Total, &t.Downloaded, &t.Failed, &t.Skipped, &t.TotalSize, &t.DownloadedSize,
-		&t.ExpectedTotal,
+		&t.ExpectedTotal, &t.ScanCursor, &t.Attempts,
 	); err != nil {
 		return nil, err
 	}

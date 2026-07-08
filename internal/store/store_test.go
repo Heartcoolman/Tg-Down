@@ -77,15 +77,18 @@ func TestTaskCRUDRoundTrip(t *testing.T) {
 		t.Fatalf("started_at changed on re-run transition: got %v, want %v", got.StartedAt, firstStartedAt)
 	}
 
-	if err := s.UpdateTaskProgress(ctx, "task-1", 10, 6, 2, 2, 1000, 600, 50); err != nil {
+	if err := s.UpdateTaskProgress(ctx, "task-1", TaskProgress{
+		Total: 10, Downloaded: 6, Failed: 2, Skipped: 2,
+		TotalSize: 1000, DownloadedSize: 600, ExpectedTotal: 50, ScanCursor: 12345, Attempts: 1,
+	}); err != nil {
 		t.Fatalf("UpdateTaskProgress() error = %v", err)
 	}
 	got, _ = s.GetTask(ctx, "task-1")
 	if got.Total != 10 || got.Downloaded != 6 || got.Failed != 2 || got.Skipped != 2 || got.TotalSize != 1000 || got.DownloadedSize != 600 {
 		t.Fatalf("progress mismatch: %+v", got)
 	}
-	if got.ExpectedTotal != 50 {
-		t.Fatalf("ExpectedTotal = %d, want 50", got.ExpectedTotal)
+	if got.ExpectedTotal != 50 || got.ScanCursor != 12345 || got.Attempts != 1 {
+		t.Fatalf("ExpectedTotal/ScanCursor/Attempts = %d/%d/%d, want 50/12345/1", got.ExpectedTotal, got.ScanCursor, got.Attempts)
 	}
 
 	if err := s.UpdateTaskStatus(ctx, "task-1", TaskStatusFailed, "网络错误"); err != nil {

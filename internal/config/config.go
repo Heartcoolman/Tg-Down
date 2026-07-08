@@ -32,6 +32,8 @@ const (
 
 	// 默认队列配置
 	DefaultMaxConcurrentTasks = 1
+	// DefaultAutoRetry 是 history 任务失败后的自动重试上限（0 = 关闭）
+	DefaultAutoRetry = 2
 
 	// 默认存储配置
 	DefaultStorePath = "./tg-down.db"
@@ -95,6 +97,19 @@ type SessionConfig struct {
 // QueueConfig 任务队列配置
 type QueueConfig struct {
 	MaxConcurrentTasks int `yaml:"max_concurrent_tasks"` // 同时运行的历史下载任务数（监控任务不占用此配额，独立运行）
+	// AutoRetry 是 history 任务失败后的自动重试上限；nil（未配置）取默认值，显式 0 关闭
+	AutoRetry *int `yaml:"auto_retry"`
+}
+
+// AutoRetryCount 返回生效的自动重试上限（未配置时为 DefaultAutoRetry）
+func (q QueueConfig) AutoRetryCount() int {
+	if q.AutoRetry == nil {
+		return DefaultAutoRetry
+	}
+	if *q.AutoRetry < 0 {
+		return 0
+	}
+	return *q.AutoRetry
 }
 
 // StoreConfig 持久化存储配置
@@ -300,6 +315,11 @@ func loadQueueConfig(config *Config) {
 	if maxConcurrentTasks := os.Getenv("MAX_CONCURRENT_TASKS"); maxConcurrentTasks != "" {
 		if tasks, err := strconv.Atoi(maxConcurrentTasks); err == nil {
 			config.Queue.MaxConcurrentTasks = tasks
+		}
+	}
+	if autoRetry := os.Getenv("AUTO_RETRY"); autoRetry != "" {
+		if n, err := strconv.Atoi(autoRetry); err == nil {
+			config.Queue.AutoRetry = &n
 		}
 	}
 }

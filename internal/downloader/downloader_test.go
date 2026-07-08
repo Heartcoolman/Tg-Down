@@ -560,3 +560,57 @@ func TestDownloader_PauseAndResumeMedia(t *testing.T) {
 		t.Fatalf("ActiveMedia() after finish = %+v, want empty", items)
 	}
 }
+
+// TestDownloadMedia_DuplicateLookup 验证内容级去重：unique_id 命中且源文件存在时复制并记 skipped；
+// 源文件已删除时回退为正常下载
+func TestDownloadMedia_DuplicateLookup(t *testing.T) {
+	dir := t.TempDir()
+	d := New(dir, 1, logger.New(logger.LevelError))
+
+	src := filepath.Join(dir, "existing.bin")
+	if err := os.WriteFile(src, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("WriteFile(src) error = %v", err)
+	}
+	downloads := 0
+	d.SetDownloadFunc(func(_ context.Context, _ *MediaInfo, filePath string) error {
+		downloads++
+		return os.WriteFile(filePath, []byte("fresh"), 0o600)
+	})
+	var events []RecordEvent
+	d.SetRecordFunc(func(_ context.Context, evt RecordEvent) { events = append(events, evt) })
+	d.SetDuplicateLookupFunc(func(_ context.Context, uniqueID string) (string, bool) {
+		if uniqueID == "dup-1" {
+			return src, true
+		}
+		if uniqueID == "gone-1" {
+			return filepath.Join(dir, "deleted.bin"), true
+		}
+		return "", false
+	})
+
+	// 命中且源文件存在：复制、skipped、不触发下载
+	m1 := &MediaInfo{MessageID: 1, TDFileID: 1, UniqueID: "dup-1", MediaType: "document", FileName: "copy.bin", ChatID: 100}
+	if err := d.DownloadMedia(context.Background(), m1); err != nil {
+		t.Fatalf("DownloadMedia(dup) error = %v", err)
+	}
+	if downloads != 0 {
+		t.Fatalf("重复内容不应触发下载, downloads = %d", downloads)
+	}
+	copied, err := os.ReadFile(filepath.Join(dir, "chat_100", "copy.bin"))
+	if err != nil || string(copied) != "payload" {
+		t.Fatalf("复制结果 = %q, %v; want payload", copied, err)
+	}
+	last := events[len(events)-1]
+	if last.Status != RecordSkipped || last.Reason == "" {
+		t.Fatalf("去重应记 skipped+reason, got %+v", last)
+	}
+
+	// 命中但源文件已删除：回退为正常下载
+	m2 := &MediaInfo{MessageID: 2, TDFileID: 2, UniqueID: "gone-1", MediaType: "document", FileName: "fresh.bin", ChatID: 100}
+	if err := d.DownloadMedia(context.Background(), m2); err != nil {
+		t.Fatalf("DownloadMedia(gone) error = %v", err)
+	}
+	if downloads != 1 {
+		t.Fatalf("源文件缺失应回退下载, downloads = %d", downloads)
+	}
+}

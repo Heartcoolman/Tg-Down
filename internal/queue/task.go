@@ -42,6 +42,9 @@ type task struct {
 
 	scannedMessages int64     // 历史扫描已翻阅的消息数（仅内存态，运行中有值）
 	foundMedia      int64     // 历史扫描累计发现的媒体数（仅内存态，运行中有值）
+	scanCursor      int64     // 历史扫描游标（持久化，重启恢复续扫起点）
+	attempts        int       // 自动重试已消耗次数（持久化）
+	resumed         bool      // 本任务是否为进程重启后恢复（需补下中断行）
 	lastScanNotify  time.Time // 上次扫描进度对外推送时刻，用于限频
 
 	lastRecordNotify      time.Time // 上次下载记录对外推送时刻，用于限频
@@ -90,6 +93,8 @@ func taskFromRow(row *store.TaskRow) *task {
 		startedAt:     row.StartedAt,
 		finishedAt:    row.FinishedAt,
 		expectedTotal: row.ExpectedTotal,
+		scanCursor:    row.ScanCursor,
+		attempts:      row.Attempts,
 		stats: downloader.Stats{
 			Total:          row.Total,
 			Downloaded:     row.Downloaded,
@@ -120,15 +125,20 @@ func (t *task) ToDTO() TaskDTO {
 		ExpectedTotal:   t.expectedTotal,
 		ScannedMessages: t.scannedMessages,
 		FoundMedia:      t.foundMedia,
+		ScanCursor:      t.scanCursor,
+		Attempts:        t.attempts,
 	}
 }
 
-// applyScanProgress 更新扫描进度，返回本次是否应对外推送（按 scanNotifyMinGap 限频）
-func (t *task) applyScanProgress(scannedMessages, foundMedia int64) (notify bool) {
+// applyScanProgress 更新扫描进度与游标，返回本次是否应对外推送（按 scanNotifyMinGap 限频）
+func (t *task) applyScanProgress(scannedMessages, foundMedia, scanCursor int64) (notify bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.scannedMessages = scannedMessages
 	t.foundMedia = foundMedia
+	if scanCursor != 0 {
+		t.scanCursor = scanCursor
+	}
 	if time.Since(t.lastScanNotify) < scanNotifyMinGap {
 		return false
 	}

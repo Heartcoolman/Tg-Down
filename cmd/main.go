@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"tg-down/internal/config"
+	"tg-down/internal/downloader"
 	"tg-down/internal/logger"
 	"tg-down/internal/store"
 	"tg-down/internal/telegram"
@@ -140,7 +141,7 @@ func runWeb(cfg *config.Config, log *logger.Logger, addr string) error {
 	ctx, cancel := setupSignalHandling(log)
 	defer cancel()
 
-	if err := web.New(client, st, log, addr, cfg.Queue.MaxConcurrentTasks).Run(ctx); err != nil {
+	if err := web.New(client, st, log, addr, cfg.Queue.MaxConcurrentTasks, cfg.Queue.AutoRetryCount()).Run(ctx); err != nil {
 		return fmt.Errorf("Web 服务运行失败: %w", err)
 	}
 	return nil
@@ -239,7 +240,8 @@ func executeDownloadHistory(ctx context.Context, client *telegram.Client, log *l
 		return nil
 	}
 	taskID := fmt.Sprintf("cli-history-%d", time.Now().UnixNano())
-	if err := client.DownloadHistoryMedia(ctx, targetChatID, taskID); err != nil {
+	spec := downloader.HistorySpec{ChatID: targetChatID, TaskID: taskID}
+	if err := client.DownloadHistoryMedia(ctx, spec); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil
 		}
@@ -271,7 +273,8 @@ func executeDownloadAndMonitor(ctx context.Context, client *telegram.Client, log
 		return nil
 	}
 	taskID := fmt.Sprintf("cli-history-%d", time.Now().UnixNano())
-	if err := client.DownloadHistoryMedia(ctx, targetChatID, taskID); err != nil {
+	spec := downloader.HistorySpec{ChatID: targetChatID, TaskID: taskID}
+	if err := client.DownloadHistoryMedia(ctx, spec); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil
 		}

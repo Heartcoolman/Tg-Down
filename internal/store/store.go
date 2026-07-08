@@ -46,7 +46,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   skipped         INTEGER DEFAULT 0,
   total_size      INTEGER DEFAULT 0,
   downloaded_size INTEGER DEFAULT 0,
-  expected_total  INTEGER NOT NULL DEFAULT 0
+  expected_total  INTEGER NOT NULL DEFAULT 0,
+  scan_cursor     INTEGER NOT NULL DEFAULT 0,
+  attempts        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status     ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC);
@@ -66,12 +68,14 @@ CREATE TABLE IF NOT EXISTS history (
   reason      TEXT,
   created_at  INTEGER NOT NULL,
   finished_at INTEGER,
+  unique_id   TEXT,
   UNIQUE(chat_id, message_id)
 );
 CREATE INDEX IF NOT EXISTS idx_history_media_type ON history(media_type);
 CREATE INDEX IF NOT EXISTS idx_history_chat_id    ON history(chat_id);
 CREATE INDEX IF NOT EXISTS idx_history_status     ON history(status);
 CREATE INDEX IF NOT EXISTS idx_history_created_at ON history(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_history_unique_id  ON history(unique_id);
 `
 
 // Store 是基于 SQLite 的持久化句柄
@@ -115,19 +119,52 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := migrateHistoryTable(context.Background(), db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	return &Store{db: db}, nil
 }
 
-// migrateTasksTable 为既有库补充 expected_total 列；新建库该列已存在，忽略重复列错误
-func migrateTasksTable(ctx context.Context, db *sql.DB) error {
-	_, err := db.ExecContext(ctx, `ALTER TABLE tasks ADD COLUMN expected_total INTEGER NOT NULL DEFAULT 0`)
+// addColumnIfMissing 以 ALTER TABLE 幂等补列：新建库中该列已随 schema 存在，忽略重复列错误
+func addColumnIfMissing(ctx context.Context, db *sql.DB, table, columnDef string) error {
+	_, err := db.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s`, table, columnDef))
 	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return fmt.Errorf("迁移 tasks 表失败: %w", err)
+		return fmt.Errorf("迁移 %s 表失败: %w", table, err)
+	}
+	return nil
+}
+
+// migrateTasksTable 为既有库补充 v1.x 之后新增的列并归一状态词汇
+func migrateTasksTable(ctx context.Context, db *sql.DB) error {
+	for _, col := range []string{
+		`expected_total INTEGER NOT NULL DEFAULT 0`,
+		`scan_cursor INTEGER NOT NULL DEFAULT 0`,
+		`attempts INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if err := addColumnIfMissing(ctx, db, "tasks", col); err != nil {
+			return err
+		}
 	}
 	// v2.0 统一状态词汇：历史遗留的 pending 归一为 queued（幂等）
 	if _, err := db.ExecContext(ctx, `UPDATE tasks SET status='queued' WHERE status='pending'`); err != nil {
 		return fmt.Errorf("迁移 tasks 状态词汇失败: %w", err)
+	}
+	return nil
+}
+
+// migrateHistoryTable 为既有库补充 unique_id 列与索引，并将旧版中断原因归一为常量
+func migrateHistoryTable(ctx context.Context, db *sql.DB) error {
+	if err := addColumnIfMissing(ctx, db, "history", `unique_id TEXT`); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_history_unique_id ON history(unique_id)`); err != nil {
+		return fmt.Errorf("创建 history unique_id 索引失败: %w", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`UPDATE history SET reason=? WHERE status='failed' AND reason='进程重启中断'`, HistoryReasonInterrupted); err != nil {
+		return fmt.Errorf("迁移 history 中断原因失败: %w", err)
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ package downloader
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -39,7 +40,8 @@ const (
 // MediaInfo 媒体文件信息
 type MediaInfo struct {
 	MessageID int64  // Telegram 消息ID（TDLib 为大整数）
-	TDFileID  int32  // TDLib 内部文件ID，用于 DownloadFile
+	TDFileID  int32  // TDLib 内部文件ID，用于 DownloadFile（会话本地，重启后失效）
+	UniqueID  string // TDLib remote file unique_id，跨聊天/跨会话稳定，用于内容级去重
 	MediaType string // photo/document/video/animation/audio/voice
 	FileName  string
 	FileSize  int64
@@ -82,6 +84,8 @@ type Downloader struct {
 	pauseFunc      func(context.Context, *MediaInfo) error
 	classifyByType atomic.Bool // Web 端可运行时切换，下载 goroutine 并发读取
 	recordFunc     func(context.Context, RecordEvent)
+	// duplicateLookupFunc 按 unique_id 查找已完成下载的既有文件路径（内容级去重），可为 nil
+	duplicateLookupFunc func(context.Context, string) (string, bool)
 
 	progressMu        sync.RWMutex
 	progressByKey     map[string]*MediaProgress
@@ -239,6 +243,12 @@ func (d *Downloader) ClassifyByType() bool {
 // SetRecordFunc 设置下载历史记录回调
 func (d *Downloader) SetRecordFunc(fn func(context.Context, RecordEvent)) {
 	d.recordFunc = fn
+}
+
+// SetDuplicateLookupFunc 设置内容级去重查找回调：按 TDLib remote unique_id 返回
+// 已完成下载的既有文件路径（ok=false 表示无记录）。由持有 store 的一方注入。
+func (d *Downloader) SetDuplicateLookupFunc(fn func(ctx context.Context, uniqueID string) (existingPath string, ok bool)) {
+	d.duplicateLookupFunc = fn
 }
 
 // SetMaxConcurrent updates the number of media files that may download at once.
@@ -739,6 +749,25 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 		return nil
 	}
 
+	// 内容级去重：同一 unique_id 已在别处下载完成且源文件仍在，复制而非重新下载；
+	// 源文件已被删除时照常下载（跳过会在用户清理旧文件后静默丢失内容）
+	if media.UniqueID != "" && d.duplicateLookupFunc != nil {
+		if src, ok := d.duplicateLookupFunc(ctx, media.UniqueID); ok && src != "" && src != filePath {
+			if _, err := os.Stat(src); err == nil {
+				if err := copyFile(src, filePath); err == nil {
+					d.logger.Info("内容重复，已从既有文件复制: %s <- %s", fileName, src)
+					d.stats.mu.Lock()
+					d.stats.Skipped++
+					d.stats.mu.Unlock()
+					d.record(ctx, RecordEvent{Media: media, Status: RecordSkipped, FilePath: filePath,
+						Reason: "duplicate of " + src})
+					return nil
+				}
+				d.logger.Warn("去重复制失败，回退为正常下载: %v", err)
+			}
+		}
+	}
+
 	if d.downloadFunc == nil {
 		d.updateStats(false, 0)
 		d.record(ctx, RecordEvent{Media: media, Status: RecordStarted, FilePath: filePath})
@@ -795,6 +824,36 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 	d.updateStats(true, actual)
 	d.finishProgress(progressKey, media, "completed")
 	d.record(ctx, RecordEvent{Media: media, Status: RecordCompleted, FilePath: filePath, DownloadedSize: actual})
+	return nil
+}
+
+// copyFile 将 src 复制为 dst：先写入同目录临时文件再原子 rename，
+// 避免复制中途崩溃留下半截文件被后续 skip-if-exists 误判为已完成
+func copyFile(src, dst string) error {
+	in, err := os.Open(src) // #nosec G304 -- src 来自本应用写入的下载历史记录
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".copy-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := io.Copy(tmp, in); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, dst); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
 	return nil
 }
 

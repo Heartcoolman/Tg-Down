@@ -88,15 +88,15 @@ type Server struct {
 // errAuthAborted 标记用户主动中止登录（返回上一步），区别于真实认证失败
 var errAuthAborted = errors.New("登录已被用户中止")
 
-// New 创建 Web 管理端，内部以 maxConcurrentTasks 构建任务队列管理器
-func New(client *telegram.Client, st *store.Store, log *logger.Logger, addr string, maxConcurrentTasks int) *Server {
+// New 创建 Web 管理端，内部以 maxConcurrentTasks/autoRetry 构建任务队列管理器
+func New(client *telegram.Client, st *store.Store, log *logger.Logger, addr string, maxConcurrentTasks, autoRetry int) *Server {
 	if addr == "" {
 		addr = DefaultAddr
 	}
 	return &Server{
 		client:       client,
 		store:        st,
-		queue:        queue.NewManager(client, st, log, maxConcurrentTasks),
+		queue:        queue.NewManager(client, st, log, maxConcurrentTasks, autoRetry),
 		logger:       log,
 		addr:         addr,
 		token:        os.Getenv(webTokenEnv),
