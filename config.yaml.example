@@ -35,3 +35,8 @@ queue:
 # 持久化存储配置
 store:
   path: "./tg-down.db"  # SQLite 数据库文件路径
+
+# 任务完成通知（任务完成/最终失败时触发，取消不通知）
+notify:
+  telegram_self: false  # 向自己的 Saved Messages 发送通知消息
+  webhook_url: ""       # 非空时向该地址 POST 任务 JSON

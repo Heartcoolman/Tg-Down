@@ -775,3 +775,57 @@ func TestEnqueue_FiltersFlowThroughSpecAndRetry(t *testing.T) {
 		t.Fatalf("Retry 未携带过滤器: %+v", retrySpecs)
 	}
 }
+
+// TestFireDueSchedules 验证定时计划：到期触发入队并更新 last_run；
+// 未到期/运行中重叠时不重复触发
+func TestFireDueSchedules(t *testing.T) {
+	fc := newFakeClient()
+	st := newTestStore(t)
+	m := NewManager(fc, st, logger.New(logger.LevelError), 1, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go m.Run(ctx)
+
+	if err := st.CreateSchedule(ctx, &store.ScheduleRow{
+		ID: "s1", ChatID: 7, ChatTitle: "chat-7", IntervalMin: 10, Enabled: true,
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("CreateSchedule() error = %v", err)
+	}
+
+	// last_run 为空 → 立即到期触发
+	m.fireDueSchedules(ctx)
+	deadline := time.Now().Add(testWaitTimeout)
+	var taskID string
+	for taskID == "" {
+		for _, dto := range m.List() {
+			if dto.ChatID == 7 && dto.Kind == string(KindHistory) {
+				taskID = dto.ID
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("定时计划未触发任务")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	rows, _ := st.ListSchedules(ctx)
+	if len(rows) != 1 || rows[0].LastRun == nil {
+		t.Fatalf("last_run 未更新: %+v", rows[0])
+	}
+
+	// 任务仍在运行且未到期 → 不重复触发
+	m.fireDueSchedules(ctx)
+	count := 0
+	for _, dto := range m.List() {
+		if dto.ChatID == 7 && dto.Kind == string(KindHistory) {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("到期前重复触发: %d 个任务", count)
+	}
+
+	fc.release(taskID)
+	waitForStatus(t, m, taskID, StatusCompleted, testWaitTimeout)
+}

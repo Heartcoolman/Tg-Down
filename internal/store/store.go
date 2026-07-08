@@ -79,6 +79,17 @@ CREATE INDEX IF NOT EXISTS idx_history_chat_id    ON history(chat_id);
 CREATE INDEX IF NOT EXISTS idx_history_status     ON history(status);
 CREATE INDEX IF NOT EXISTS idx_history_created_at ON history(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_history_unique_id  ON history(unique_id);
+
+CREATE TABLE IF NOT EXISTS schedules (
+  id           TEXT PRIMARY KEY,
+  chat_id      INTEGER NOT NULL,
+  chat_title   TEXT,
+  interval_min INTEGER NOT NULL,
+  filters      TEXT,
+  enabled      INTEGER NOT NULL DEFAULT 1,
+  last_run     INTEGER,
+  created_at   INTEGER NOT NULL
+);
 `
 
 // Store 是基于 SQLite 的持久化句柄

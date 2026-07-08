@@ -48,6 +48,7 @@ type Manager struct {
 	order       []*task // 插入顺序（最早在前），List() 据此反转为最新优先
 	monitorTask *task
 	onChange    func(*TaskDTO)
+	onTerminal  func(TaskDTO) // 任务终结通知（completed/最终 failed，取消与自动重试不触发）
 	runCtx      context.Context
 
 	monitorMu sync.Mutex // 串行化 monitor 切换，保证同一时刻至多一个 monitor 任务在运行
@@ -175,6 +176,24 @@ func (m *Manager) SetOnChange(fn func(*TaskDTO)) {
 	m.mu.Unlock()
 }
 
+// SetOnTerminal 设置任务终结回调：completed 与自动重试耗尽后的最终 failed 触发，
+// canceled 与重试中的中间失败不触发；按任务粒度调用
+func (m *Manager) SetOnTerminal(fn func(TaskDTO)) {
+	m.mu.Lock()
+	m.onTerminal = fn
+	m.mu.Unlock()
+}
+
+// fireTerminal 触发任务终结回调（若已注册）
+func (m *Manager) fireTerminal(t *task) {
+	m.mu.Lock()
+	fn := m.onTerminal
+	m.mu.Unlock()
+	if fn != nil {
+		fn(t.ToDTO())
+	}
+}
+
 // Run 启动 history worker 池与记录持久化 writer，阻塞直至 ctx 取消；取消后停止接受新任务执行，
 // 所有运行中任务的 ctx 均派生自 ctx，会随之自动取消。启动时一次性消费 loadTasks 收集的待恢复任务。
 func (m *Manager) Run(ctx context.Context) {
@@ -194,6 +213,7 @@ func (m *Manager) Run(ctx context.Context) {
 	}()
 
 	go m.persistLoop(ctx)
+	go m.runScheduler(ctx)
 
 	var wg sync.WaitGroup
 	for i := 0; i < m.maxConcurrentTasks; i++ {
@@ -413,6 +433,9 @@ func (m *Manager) runHistoryTask(ctx context.Context, t *task) {
 	if retryScheduled {
 		m.scheduleRetry(t, attempt, err)
 		return // 任务未终结，不 markDone
+	}
+	if !canceled {
+		m.fireTerminal(t) // completed 或最终 failed
 	}
 	t.markDone()
 }

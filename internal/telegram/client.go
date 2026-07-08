@@ -976,6 +976,38 @@ var historyCountFilters = map[string]tdclient.SearchMessagesFilter{
 	mediaTypeAnimation: &tdclient.SearchMessagesFilterAnimation{},
 }
 
+// SendSelfMessage 向自己的 Saved Messages 发送一条文本消息（用于任务完成通知）
+func (c *Client) SendSelfMessage(ctx context.Context, text string) error {
+	td := c.client()
+	if td == nil {
+		return errors.New("TDLib 未连接")
+	}
+	me, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.User, error) {
+		return td.GetMe(cc)
+	})
+	if err != nil {
+		return fmt.Errorf("获取当前用户失败: %w", err)
+	}
+	chat, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Chat, error) {
+		return td.CreatePrivateChat(cc, &tdclient.CreatePrivateChatRequest{UserId: me.Id})
+	})
+	if err != nil {
+		return fmt.Errorf("打开 Saved Messages 失败: %w", err)
+	}
+	_, err = tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Message, error) {
+		return td.SendMessage(cc, &tdclient.SendMessageRequest{
+			ChatId: chat.Id,
+			InputMessageContent: &tdclient.InputMessageText{
+				Text: &tdclient.FormattedText{Text: text},
+			},
+		})
+	})
+	if err != nil {
+		return fmt.Errorf("发送通知消息失败: %w", err)
+	}
+	return nil
+}
+
 // ResolvedTarget 是 t.me 链接/公开用户名的解析结果；MessageID 非 0 表示指向单条消息
 type ResolvedTarget struct {
 	ChatID    int64  `json:"chat_id"`

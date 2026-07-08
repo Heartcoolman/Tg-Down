@@ -141,7 +141,7 @@ func runWeb(cfg *config.Config, log *logger.Logger, addr string) error {
 	ctx, cancel := setupSignalHandling(log)
 	defer cancel()
 
-	if err := web.New(client, st, log, addr, cfg.Queue.MaxConcurrentTasks, cfg.Queue.AutoRetryCount()).Run(ctx); err != nil {
+	if err := web.New(client, st, log, addr, cfg).Run(ctx); err != nil {
 		return fmt.Errorf("Web 服务运行失败: %w", err)
 	}
 	return nil

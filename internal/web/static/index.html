@@ -584,6 +584,17 @@
       <div class="card task-list" id="mediaList"><div class="empty">暂无排队或下载中的媒体</div></div>
       <div class="queue-sub">批量任务<span id="batchCountText"></span></div>
       <div class="card task-list" id="taskList"><div class="empty">暂无批量任务</div></div>
+
+      <div class="queue-sub">定时下载<span id="schedCountText"></span></div>
+      <div class="card" style="padding:14px 16px;margin-bottom:12px">
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+          <div class="cmd-select"><select id="schedChat"></select></div>
+          <label class="meta">间隔(分钟) <input class="num-input" id="schedInterval" type="number" min="10" step="10" value="1440" style="width:90px"></label>
+          <button class="btn-tint" onclick="createSchedule(this)">新建计划</button>
+          <span class="meta">到期自动增量扫描该聊天（沿用概览页过滤器设置）</span>
+        </div>
+      </div>
+      <div class="card task-list" id="schedList"><div class="empty">暂无定时计划</div></div>
     </section>
 
     <!-- ======== 下载历史 ======== -->
@@ -766,8 +777,8 @@ function withToken(path) {
   if (!authToken) return path;
   return path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(authToken);
 }
-async function api(path, body) {
-  const opt = { method: body === undefined ? "GET" : "POST", headers: {} };
+async function api(path, body, method) {
+  const opt = { method: method || (body === undefined ? "GET" : "POST"), headers: {} };
   if (body !== undefined) {
     opt.headers["Content-Type"] = "application/json";
     opt.body = JSON.stringify(body);
@@ -826,6 +837,9 @@ function showPage(key) {
     loadSettings();
   } else if (key === "chats" && !chats.length) {
     loadChats();
+  } else if (key === "tasks") {
+    loadSchedules();
+    populateSchedChatSelect();
   }
 }
 
@@ -1211,6 +1225,75 @@ function filterChips(t) {
     if (f.max_file_size) bits.push("≤" + Math.round(f.max_file_size / 1048576) + "MB");
   }
   return bits.length ? ` · ${bits.join(" · ")}` : "";
+}
+
+/* ---- 定时下载计划 ---- */
+let schedules = [];
+function populateSchedChatSelect() {
+  const sel = $("schedChat");
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = chats.map(c =>
+    `<option value="${c.id}">${escapeHtml(c.title) || ("ID " + c.id)}</option>`).join("")
+    || `<option value="0">暂无聊天</option>`;
+  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+}
+async function loadSchedules() {
+  try {
+    schedules = await api("/api/schedules") || [];
+    renderSchedules();
+  } catch (e) {}
+}
+function renderSchedules() {
+  $("schedCountText").textContent = schedules.length ? ` · ${schedules.length} 条` : "";
+  const el = $("schedList");
+  if (!schedules.length) { el.innerHTML = `<div class="empty">暂无定时计划</div>`; return; }
+  el.innerHTML = schedules.map(sc => {
+    const last = sc.last_run ? new Date(sc.last_run).toLocaleString() : "从未";
+    const intervalText = sc.interval_min % 1440 === 0 ? `${sc.interval_min / 1440} 天`
+      : sc.interval_min % 60 === 0 ? `${sc.interval_min / 60} 小时` : `${sc.interval_min} 分钟`;
+    return `<div class="task-row">
+      <div class="task-row-top">
+        <div class="task-row-main">
+          <b title="${escapeAttr(sc.chat_title || "")}">${escapeHtml(sc.chat_title) || ("ID " + sc.chat_id)}</b>
+          <small>每 ${intervalText} · 上次触发: ${escapeHtml(last)}${sc.enabled ? "" : " · 已停用"}</small>
+        </div>
+        <div class="task-row-side">
+          <button class="btn-small" onclick="toggleSchedule('${escapeAttr(sc.id)}', ${!sc.enabled}, this)">${sc.enabled ? "停用" : "启用"}</button>
+          <button class="btn-small" onclick="deleteSchedule('${escapeAttr(sc.id)}', this)">删除</button>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+}
+async function createSchedule(b) {
+  const chatId = parseInt($("schedChat").value, 10) || 0;
+  if (!chatId) return toast("请先选择聊天");
+  const interval = parseInt($("schedInterval").value, 10) || 0;
+  if (interval < 10) return toast("间隔不能小于 10 分钟");
+  if (b) b.disabled = true;
+  try {
+    const body = { chat_id: chatId, interval_min: interval };
+    const f = collectFilters();
+    if (f) body.filters = f;
+    await api("/api/schedules", body);
+    toast("已创建定时计划");
+    loadSchedules();
+  } catch (e) { toast(e.message); }
+  finally { if (b) b.disabled = false; }
+}
+async function toggleSchedule(id, enabled, b) {
+  if (b) b.disabled = true;
+  try { await api(`/api/schedules/${encodeURIComponent(id)}/toggle`, { enabled }); loadSchedules(); }
+  catch (e) { toast(e.message); }
+  finally { if (b) b.disabled = false; }
+}
+async function deleteSchedule(id, b) {
+  if (!confirm("确认删除该定时计划？")) return;
+  if (b) b.disabled = true;
+  try { await api(`/api/schedules/${encodeURIComponent(id)}`, undefined, "DELETE"); toast("已删除"); loadSchedules(); }
+  catch (e) { toast(e.message); }
+  finally { if (b) b.disabled = false; }
 }
 
 /* ---- t.me 链接解析 ---- */

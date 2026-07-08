@@ -54,6 +54,15 @@ type Config struct {
 	Retry    RetryConfig    `yaml:"retry"`
 	Queue    QueueConfig    `yaml:"queue"`
 	Store    StoreConfig    `yaml:"store"`
+	Notify   NotifyConfig   `yaml:"notify"`
+}
+
+// NotifyConfig 任务完成通知配置
+type NotifyConfig struct {
+	// TelegramSelf 为 true 时任务终结（完成/最终失败）向自己的 Saved Messages 发消息
+	TelegramSelf bool `yaml:"telegram_self"`
+	// WebhookURL 非空时任务终结向该地址 POST JSON
+	WebhookURL string `yaml:"webhook_url"`
 }
 
 // APIConfig Telegram API配置
@@ -225,6 +234,17 @@ func loadFromEnv(config *Config) {
 	loadRetryConfig(config)
 	loadQueueConfig(config)
 	loadStoreConfig(config)
+	loadNotifyConfig(config)
+}
+
+// loadNotifyConfig 加载通知配置
+func loadNotifyConfig(config *Config) {
+	if v := os.Getenv("NOTIFY_TELEGRAM_SELF"); v != "" {
+		config.Notify.TelegramSelf = v == "1" || strings.EqualFold(v, "true")
+	}
+	if v := os.Getenv("NOTIFY_WEBHOOK_URL"); v != "" {
+		config.Notify.WebhookURL = v
+	}
 }
 
 // loadAPIConfig 加载API配置
