@@ -221,7 +221,7 @@ func executeMode(
 // logHistoryMediaCount 在下载前统计并打印聊天媒体总数（近似值）；
 // 统计失败仅告警不阻断，返回非 nil 仅表示 ctx 已取消
 func logHistoryMediaCount(ctx context.Context, client *telegram.Client, log *logger.Logger, chatID int64) error {
-	total, err := client.CountHistoryMedia(ctx, chatID)
+	total, err := client.CountHistoryMedia(ctx, chatID, nil)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return err

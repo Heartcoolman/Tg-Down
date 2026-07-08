@@ -20,8 +20,10 @@ type TaskRow struct {
 	TotalSize      int64
 	DownloadedSize int64
 	ExpectedTotal  int64
-	ScanCursor     int64 // 历史扫描游标（最后已扫描页的最旧 message_id），0 = 从最新开始
-	Attempts       int   // 自动重试已消耗的次数
+	ScanCursor     int64  // 历史扫描游标（最后已扫描页的最旧 message_id），0 = 从最新开始
+	Attempts       int    // 自动重试已消耗的次数
+	Filters        string // 任务级过滤器 JSON（downloader.HistoryFilters），空 = 不过滤
+	MessageID      int64  // 单消息下载任务的目标消息 id，0 = 整聊天历史任务
 }
 
 // 任务状态常量，取值与 internal/queue 的 Status 保持一致（queue 为唯一词汇源）
@@ -50,6 +52,7 @@ type HistoryRecord struct {
 	CreatedAt  time.Time
 	FinishedAt *time.Time
 	UniqueID   string // TDLib remote file unique_id，跨聊天稳定，用于内容级去重
+	AlbumID    int64  // Telegram 相册 id（media_album_id），0 = 不属于相册
 }
 
 // 下载历史状态常量，取值与 downloader.RecordStatus 保持一致

@@ -48,7 +48,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   downloaded_size INTEGER DEFAULT 0,
   expected_total  INTEGER NOT NULL DEFAULT 0,
   scan_cursor     INTEGER NOT NULL DEFAULT 0,
-  attempts        INTEGER NOT NULL DEFAULT 0
+  attempts        INTEGER NOT NULL DEFAULT 0,
+  filters         TEXT,
+  message_id      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status     ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC);
@@ -69,6 +71,7 @@ CREATE TABLE IF NOT EXISTS history (
   created_at  INTEGER NOT NULL,
   finished_at INTEGER,
   unique_id   TEXT,
+  album_id    INTEGER NOT NULL DEFAULT 0,
   UNIQUE(chat_id, message_id)
 );
 CREATE INDEX IF NOT EXISTS idx_history_media_type ON history(media_type);
@@ -142,6 +145,8 @@ func migrateTasksTable(ctx context.Context, db *sql.DB) error {
 		`expected_total INTEGER NOT NULL DEFAULT 0`,
 		`scan_cursor INTEGER NOT NULL DEFAULT 0`,
 		`attempts INTEGER NOT NULL DEFAULT 0`,
+		`filters TEXT`,
+		`message_id INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if err := addColumnIfMissing(ctx, db, "tasks", col); err != nil {
 			return err
@@ -157,6 +162,9 @@ func migrateTasksTable(ctx context.Context, db *sql.DB) error {
 // migrateHistoryTable 为既有库补充 unique_id 列与索引，并将旧版中断原因归一为常量
 func migrateHistoryTable(ctx context.Context, db *sql.DB) error {
 	if err := addColumnIfMissing(ctx, db, "history", `unique_id TEXT`); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(ctx, db, "history", `album_id INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return err
 	}
 	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_history_unique_id ON history(unique_id)`); err != nil {

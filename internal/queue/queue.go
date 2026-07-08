@@ -41,7 +41,7 @@ const (
 // ChatDownloader 是 Manager 依赖的最小接口（而非直接依赖 *telegram.Client），
 // 使本包可在无真实 TDLib 连接的情况下进行单元测试。
 type ChatDownloader interface {
-	CountHistoryMedia(ctx context.Context, chatID int64) (int64, error)
+	CountHistoryMedia(ctx context.Context, chatID int64, mediaTypes []string) (int64, error)
 	DownloadHistoryMedia(ctx context.Context, spec downloader.HistorySpec) error
 	SetMonitorTask(taskID string, chatID int64)
 	SetRecordFunc(fn func(context.Context, downloader.RecordEvent))
@@ -72,4 +72,8 @@ type TaskDTO struct {
 	ScanCursor int64 `json:"scan_cursor,omitempty"`
 	// Attempts 是自动重试已消耗的次数
 	Attempts int `json:"attempts,omitempty"`
+	// Filters 是任务级过滤条件（nil = 不过滤）
+	Filters *downloader.HistoryFilters `json:"filters,omitempty"`
+	// MessageID 非 0 时为单消息下载任务（t.me 消息链接）
+	MessageID int64 `json:"message_id,omitempty"`
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v3"
@@ -68,6 +69,8 @@ type DownloadConfig struct {
 	MaxConcurrent int    `yaml:"max_concurrent"` // 同时下载的文件数
 	BatchSize     int    `yaml:"batch_size"`     // 每批拉取的历史消息数
 	PartitionSize int    `yaml:"partition_size"` // 历史下载在途媒体上限（扫描最多领先下载的数量）
+	// SaveMetadata 为 true 时在每个下载文件旁写 <文件>.json 元数据（caption/发送者/日期等）
+	SaveMetadata bool `yaml:"save_metadata"`
 	// DisableClassifyByType 为 true 时关闭按媒体类型归档（默认归档开启）
 	DisableClassifyByType bool `yaml:"disable_classify_by_type"`
 }
@@ -263,6 +266,10 @@ func loadDownloadConfig(config *Config) {
 		if partition, err := strconv.Atoi(partitionSize); err == nil {
 			config.Download.PartitionSize = partition
 		}
+	}
+
+	if saveMetadata := os.Getenv("SAVE_METADATA"); saveMetadata != "" {
+		config.Download.SaveMetadata = saveMetadata == "1" || strings.EqualFold(saveMetadata, "true")
 	}
 }
 

@@ -22,8 +22,8 @@ const (
 func (s *Store) UpsertHistoryStart(ctx context.Context, rec *HistoryRecord) error {
 	const q = `
 INSERT INTO history (task_id, chat_id, chat_title, message_id, media_type, file_name, file_path,
-                      file_size, mime_type, status, reason, created_at, finished_at, unique_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?)
+                      file_size, mime_type, status, reason, created_at, finished_at, unique_id, album_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?)
 ON CONFLICT(chat_id, message_id) DO UPDATE SET
   task_id    = excluded.task_id,
   chat_title = excluded.chat_title,
@@ -36,7 +36,8 @@ ON CONFLICT(chat_id, message_id) DO UPDATE SET
   reason     = NULL,
   created_at = excluded.created_at,
   finished_at = NULL,
-  unique_id  = COALESCE(NULLIF(excluded.unique_id, ''), history.unique_id)
+  unique_id  = COALESCE(NULLIF(excluded.unique_id, ''), history.unique_id),
+  album_id   = excluded.album_id
 WHERE history.status NOT IN ('completed', 'failed')
    OR (history.status = 'failed' AND history.reason = '` + HistoryReasonInterrupted + `')`
 
@@ -48,7 +49,7 @@ WHERE history.status NOT IN ('completed', 'failed')
 	_, err := s.execContext(ctx, q,
 		nullString(rec.TaskID), rec.ChatID, nullString(rec.ChatTitle), rec.MessageID,
 		rec.MediaType, rec.FileName, rec.FilePath, rec.FileSize, nullString(rec.MimeType),
-		rec.Status, timeToUnix(createdAt), nullString(rec.UniqueID),
+		rec.Status, timeToUnix(createdAt), nullString(rec.UniqueID), rec.AlbumID,
 	)
 	if err != nil {
 		return fmt.Errorf("写入下载历史失败: %w", err)

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"tg-down/internal/downloader"
 	"tg-down/internal/queue"
 	"tg-down/internal/store"
 	"tg-down/internal/telegram"
@@ -31,6 +32,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/settings/classify", s.handleSettingsClassify)
 	mux.HandleFunc("GET /api/tasks", s.handleTasksList)
 	mux.HandleFunc("POST /api/tasks", s.handleTasksCreate)
+	mux.HandleFunc("POST /api/resolve", s.handleResolve)
 	mux.HandleFunc("POST /api/tasks/{id}/cancel", s.handleTaskCancel)
 	mux.HandleFunc("POST /api/tasks/{id}/retry", s.handleTaskRetry)
 	mux.HandleFunc("GET /api/download/settings", s.handleDownloadSettings)
@@ -239,6 +241,12 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Kind   string `json:"kind"`
 		ChatID int64  `json:"chat_id"`
+		// Filters 是任务级过滤条件（仅 history 任务生效；monitor 在 v2.0 忽略过滤器）
+		Filters downloader.HistoryFilters `json:"filters"`
+		// MessageID 非 0 时创建单消息下载任务（来自 /api/resolve 的消息链接解析）
+		MessageID int64 `json:"message_id"`
+		// ChatTitle 可选；公开频道可能不在缓存聊天列表中，由解析结果直接携带标题
+		ChatTitle string `json:"chat_title"`
 	}
 	if !s.decode(w, r, &body) {
 		return
@@ -248,15 +256,43 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "kind 必须为 history 或 monitor")
 		return
 	}
+	if msg := body.Filters.Validate(); msg != "" {
+		s.writeError(w, http.StatusBadRequest, msg)
+		return
+	}
 	if !s.requireReady(w) {
 		return
 	}
-	dto, err := s.queue.Enqueue(kind, body.ChatID, s.chatTitle(body.ChatID))
+	title := body.ChatTitle
+	if title == "" {
+		title = s.chatTitle(body.ChatID)
+	}
+	spec := downloader.HistorySpec{ChatID: body.ChatID, Filters: body.Filters, MessageID: body.MessageID}
+	dto, err := s.queue.Enqueue(kind, spec, title)
 	if err != nil {
 		s.writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 	s.writeJSON(w, dto)
+}
+
+// handleResolve 解析 t.me 链接 / @用户名为聊天与可选消息 id，供前端确认后创建任务
+func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Input string `json:"input"`
+	}
+	if !s.decode(w, r, &body) {
+		return
+	}
+	if !s.requireReady(w) {
+		return
+	}
+	target, err := s.client.ResolveTarget(r.Context(), body.Input)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.writeJSON(w, target)
 }
 
 func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {

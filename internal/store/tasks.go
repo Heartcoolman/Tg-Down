@@ -19,14 +19,14 @@ func (s *Store) CreateTask(ctx context.Context, t *TaskRow) error {
 	const q = `
 INSERT INTO tasks (id, kind, chat_id, chat_title, status, created_at, started_at, finished_at,
                     error, total, downloaded, failed, skipped, total_size, downloaded_size, expected_total,
-                    scan_cursor, attempts)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                    scan_cursor, attempts, filters, message_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err := s.execContext(ctx, q,
 		t.ID, t.Kind, t.ChatID, t.ChatTitle, t.Status, timeToUnix(t.CreatedAt),
 		timePtrToUnix(t.StartedAt), timePtrToUnix(t.FinishedAt), nullString(t.Error),
 		t.Total, t.Downloaded, t.Failed, t.Skipped, t.TotalSize, t.DownloadedSize, t.ExpectedTotal,
-		t.ScanCursor, t.Attempts,
+		t.ScanCursor, t.Attempts, nullString(t.Filters), t.MessageID,
 	)
 	if err != nil {
 		return fmt.Errorf("创建任务失败: %w", err)
@@ -84,7 +84,7 @@ func (s *Store) ListTasks(ctx context.Context) ([]*TaskRow, error) {
 	const q = `
 SELECT id, kind, chat_id, chat_title, status, created_at, started_at, finished_at,
        error, total, downloaded, failed, skipped, total_size, downloaded_size, expected_total,
-       scan_cursor, attempts
+       scan_cursor, attempts, filters, message_id
 FROM tasks ORDER BY created_at DESC`
 
 	rows, err := s.db.QueryContext(ctx, q)
@@ -112,7 +112,7 @@ func (s *Store) GetTask(ctx context.Context, id string) (*TaskRow, error) {
 	const q = `
 SELECT id, kind, chat_id, chat_title, status, created_at, started_at, finished_at,
        error, total, downloaded, failed, skipped, total_size, downloaded_size, expected_total,
-       scan_cursor, attempts
+       scan_cursor, attempts, filters, message_id
 FROM tasks WHERE id = ?`
 
 	row := s.db.QueryRowContext(ctx, q, id)
@@ -129,22 +129,23 @@ FROM tasks WHERE id = ?`
 // scanTaskRow 从单行结果解析出 TaskRow
 func scanTaskRow(row scanner) (*TaskRow, error) {
 	var (
-		t                     TaskRow
-		createdAt             int64
-		startedAt, finishedAt sql.NullInt64
-		errMsg, chatTitle     sql.NullString
+		t                          TaskRow
+		createdAt                  int64
+		startedAt, finishedAt      sql.NullInt64
+		errMsg, chatTitle, filters sql.NullString
 	)
 
 	if err := row.Scan(
 		&t.ID, &t.Kind, &t.ChatID, &chatTitle, &t.Status, &createdAt, &startedAt, &finishedAt,
 		&errMsg, &t.Total, &t.Downloaded, &t.Failed, &t.Skipped, &t.TotalSize, &t.DownloadedSize,
-		&t.ExpectedTotal, &t.ScanCursor, &t.Attempts,
+		&t.ExpectedTotal, &t.ScanCursor, &t.Attempts, &filters, &t.MessageID,
 	); err != nil {
 		return nil, err
 	}
 
 	t.ChatTitle = chatTitle.String
 	t.Error = errMsg.String
+	t.Filters = filters.String
 	t.CreatedAt = unixToTime(createdAt)
 	t.StartedAt = nullInt64ToTimePtr(startedAt)
 	t.FinishedAt = nullInt64ToTimePtr(finishedAt)

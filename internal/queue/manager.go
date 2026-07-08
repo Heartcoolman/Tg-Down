@@ -323,12 +323,23 @@ func (m *Manager) runHistoryTask(ctx context.Context, t *task) {
 	m.persist(t)
 	m.notify(t)
 
-	// 计数阶段：下载开始前先统计媒体总数并落库+推送，前端立即可见"共约 N 个"
+	t.mu.Lock()
+	isSingleMessage := t.messageID != 0
+	mediaTypes := t.filters.MediaTypes
+	t.mu.Unlock()
+
+	// 计数阶段：下载开始前先统计媒体总数并落库+推送，前端立即可见"共约 N 个"；
+	// 单消息任务无需统计，总数恒为 1
 	t.mu.Lock()
 	t.phase = phaseCounting
 	t.mu.Unlock()
 	m.notify(t)
-	if total, cntErr := m.client.CountHistoryMedia(taskCtx, t.chatID); cntErr != nil {
+	if isSingleMessage {
+		t.mu.Lock()
+		t.expectedTotal = 1
+		t.mu.Unlock()
+		m.persist(t)
+	} else if total, cntErr := m.client.CountHistoryMedia(taskCtx, t.chatID, mediaTypes); cntErr != nil {
 		if taskCtx.Err() == nil {
 			m.logger.Warn("统计任务 %s 媒体总数失败，回退为未知总数: %v", t.id, cntErr)
 		}
@@ -345,6 +356,8 @@ func (m *Manager) runHistoryTask(ctx context.Context, t *task) {
 		ChatID:        t.chatID,
 		TaskID:        t.id,
 		FromMessageID: t.scanCursor,
+		MessageID:     t.messageID,
+		Filters:       t.filters,
 	}
 	resumed := t.resumed
 	t.mu.Unlock()
@@ -429,36 +442,42 @@ func (m *Manager) scheduleRetry(t *task, attempt int, cause error) {
 }
 
 // Enqueue 创建并提交一个新任务。history 任务进入有界 worker 池排队；
-// monitor 任务立即以独立 goroutine 长期运行（不占用 history 配额），chatID 为 0 表示停止监控。
-func (m *Manager) Enqueue(kind Kind, chatID int64, chatTitle string) (TaskDTO, error) {
+// monitor 任务立即以独立 goroutine 长期运行（不占用 history 配额），ChatID 为 0 表示停止监控。
+// spec 携带 ChatID 以及 history 任务的过滤器/单消息参数（monitor 忽略后两者）。
+func (m *Manager) Enqueue(kind Kind, spec downloader.HistorySpec, chatTitle string) (TaskDTO, error) {
 	switch kind {
 	case KindHistory:
-		return m.enqueueHistory(chatID, chatTitle)
+		return m.enqueueHistory(spec, chatTitle)
 	case KindMonitor:
-		return m.enqueueMonitor(chatID, chatTitle)
+		return m.enqueueMonitor(spec.ChatID, chatTitle)
 	default:
 		return TaskDTO{}, fmt.Errorf("未知任务类型: %s", kind)
 	}
 }
 
 // enqueueHistory 创建 history 任务、持久化后投递给 worker 池；
-// 同一 chatID 已存在排队中/运行中的 history 任务时拒绝创建，避免重复下载
-func (m *Manager) enqueueHistory(chatID int64, chatTitle string) (TaskDTO, error) {
+// 排队中/运行中的重复任务拒绝创建（整聊天任务按 chatID 去重，单消息任务按 (chatID, messageID) 去重）
+func (m *Manager) enqueueHistory(spec downloader.HistorySpec, chatTitle string) (TaskDTO, error) {
 	m.mu.Lock()
 	for _, existing := range m.tasks {
-		if existing.kind != KindHistory || existing.chatID != chatID {
+		if existing.kind != KindHistory || existing.chatID != spec.ChatID {
 			continue
 		}
 		existing.mu.Lock()
 		status := existing.status
+		existingMsgID := existing.messageID
 		existing.mu.Unlock()
-		if status == StatusQueued || status == StatusRunning {
-			m.mu.Unlock()
-			return TaskDTO{}, fmt.Errorf("该会话已有下载任务在队列中")
+		if status != StatusQueued && status != StatusRunning {
+			continue
 		}
+		if existingMsgID != spec.MessageID {
+			continue // 单消息任务与整聊天任务互不冲突，不同消息的单消息任务亦然
+		}
+		m.mu.Unlock()
+		return TaskDTO{}, fmt.Errorf("该会话已有下载任务在队列中")
 	}
 
-	t := newTask(KindHistory, chatID, chatTitle)
+	t := newTask(KindHistory, spec, chatTitle)
 	if err := m.createTaskRow(t); err != nil {
 		m.mu.Unlock()
 		return TaskDTO{}, err
@@ -495,7 +514,7 @@ func (m *Manager) enqueueMonitor(chatID int64, chatTitle string) (TaskDTO, error
 		return TaskDTO{}, nil
 	}
 
-	t := newTask(KindMonitor, chatID, chatTitle)
+	t := newTask(KindMonitor, downloader.HistorySpec{ChatID: chatID}, chatTitle)
 	t.mu.Lock()
 	t.status = StatusRunning
 	now := time.Now()
@@ -646,13 +665,14 @@ func (m *Manager) Retry(id string) (TaskDTO, error) {
 	}
 
 	t.mu.Lock()
-	status, kind, chatID, chatTitle := t.status, t.kind, t.chatID, t.chatTitle
+	status, kind, chatTitle := t.status, t.kind, t.chatTitle
+	spec := downloader.HistorySpec{ChatID: t.chatID, Filters: t.filters, MessageID: t.messageID}
 	t.mu.Unlock()
 
 	if status != StatusFailed && status != StatusCanceled {
 		return TaskDTO{}, fmt.Errorf("任务状态为 %s，不允许重试", status)
 	}
-	return m.Enqueue(kind, chatID, chatTitle)
+	return m.Enqueue(kind, spec, chatTitle)
 }
 
 // createTaskRow 按任务当前快照在 store 中创建持久化记录
@@ -669,6 +689,8 @@ func (m *Manager) createTaskRow(t *task) error {
 		ExpectedTotal: dto.ExpectedTotal,
 		ScanCursor:    dto.ScanCursor,
 		Attempts:      dto.Attempts,
+		Filters:       t.filtersJSON(),
+		MessageID:     dto.MessageID,
 	}
 	if err := m.store.CreateTask(context.Background(), row); err != nil {
 		return fmt.Errorf("创建任务记录失败: %w", err)

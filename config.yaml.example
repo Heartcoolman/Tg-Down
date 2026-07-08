@@ -9,6 +9,7 @@ download:
   max_concurrent: 5    # 同时下载的文件数
   batch_size: 100      # 每批拉取的历史消息数
   partition_size: 100  # 历史下载在途媒体上限（扫描最多领先下载的数量）
+  save_metadata: false # 为 true 时在每个下载文件旁写 <文件>.json 元数据（caption/发送者/日期等）
   disable_classify_by_type: false  # 按媒体类型归档默认开启；设为 true 可恢复旧版扁平目录布局
 
 chat:

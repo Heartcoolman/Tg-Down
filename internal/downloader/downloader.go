@@ -4,6 +4,7 @@ package downloader
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -49,6 +50,9 @@ type MediaInfo struct {
 	ChatID    int64
 	Date      time.Time
 	TaskID    string // 所属任务ID（CLI 模式使用合成ID）
+	AlbumID   int64  // Telegram 相册（media_album_id），0 = 不属于相册
+	Caption   string // 消息 caption 文本（供元数据 sidecar）
+	SenderID  int64  // 发送者 user/chat id（供元数据 sidecar）
 }
 
 // RecordStatus 下载记录状态
@@ -83,6 +87,7 @@ type Downloader struct {
 	downloadFunc   func(context.Context, *MediaInfo, string) error
 	pauseFunc      func(context.Context, *MediaInfo) error
 	classifyByType atomic.Bool // Web 端可运行时切换，下载 goroutine 并发读取
+	saveMetadata   atomic.Bool // 下载完成后是否写元数据 sidecar
 	recordFunc     func(context.Context, RecordEvent)
 	// duplicateLookupFunc 按 unique_id 查找已完成下载的既有文件路径（内容级去重），可为 nil
 	duplicateLookupFunc func(context.Context, string) (string, bool)
@@ -249,6 +254,11 @@ func (d *Downloader) SetRecordFunc(fn func(context.Context, RecordEvent)) {
 // 已完成下载的既有文件路径（ok=false 表示无记录）。由持有 store 的一方注入。
 func (d *Downloader) SetDuplicateLookupFunc(fn func(ctx context.Context, uniqueID string) (existingPath string, ok bool)) {
 	d.duplicateLookupFunc = fn
+}
+
+// SetSaveMetadata 设置是否在下载完成后写 <文件>.json 元数据 sidecar
+func (d *Downloader) SetSaveMetadata(v bool) {
+	d.saveMetadata.Store(v)
 }
 
 // SetMaxConcurrent updates the number of media files that may download at once.
@@ -824,7 +834,35 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 	d.updateStats(true, actual)
 	d.finishProgress(progressKey, media, "completed")
 	d.record(ctx, RecordEvent{Media: media, Status: RecordCompleted, FilePath: filePath, DownloadedSize: actual})
+	d.writeMetadataSidecar(media, filePath)
 	return nil
+}
+
+// writeMetadataSidecar 在开关开启时写 <文件>.json 元数据（best-effort，失败仅告警）
+func (d *Downloader) writeMetadataSidecar(media *MediaInfo, filePath string) {
+	if !d.saveMetadata.Load() {
+		return
+	}
+	payload := map[string]any{
+		"message_id": media.MessageID,
+		"chat_id":    media.ChatID,
+		"date":       media.Date.Unix(),
+		"sender_id":  media.SenderID,
+		"caption":    media.Caption,
+		"album_id":   media.AlbumID,
+		"media_type": media.MediaType,
+		"file_name":  media.FileName,
+		"file_size":  media.FileSize,
+		"mime_type":  media.MimeType,
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		d.logger.Warn("序列化元数据失败: %v", err)
+		return
+	}
+	if err := os.WriteFile(filePath+".json", data, 0o644); err != nil { // #nosec G306 -- 元数据非敏感
+		d.logger.Warn("写入元数据 sidecar 失败: %v", err)
+	}
 }
 
 // copyFile 将 src 复制为 dst：先写入同目录临时文件再原子 rename，
@@ -871,6 +909,10 @@ func (d *Downloader) planMediaPath(media *MediaInfo) (chatDir, fileName, filePat
 	chatDir = filepath.Join(d.downloadPath, fmt.Sprintf("chat_%d", media.ChatID))
 	if d.classifyByType.Load() {
 		chatDir = filepath.Join(chatDir, classifyDir(media.MediaType))
+	}
+	if media.AlbumID != 0 {
+		// 同一相册的文件归入同一子目录
+		chatDir = filepath.Join(chatDir, fmt.Sprintf("album_%d", media.AlbumID))
 	}
 
 	fileName = media.FileName

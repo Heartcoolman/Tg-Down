@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -156,6 +157,7 @@ func newClient(cfg *config.Config, log *logger.Logger, chatID int64) *Client {
 	c.downloader.SetDownloadFunc(c.DownloadFile)
 	c.downloader.SetPauseFunc(c.pauseDownloadFile)
 	c.downloader.SetClassifyByType(!cfg.Download.DisableClassifyByType)
+	c.downloader.SetSaveMetadata(cfg.Download.SaveMetadata)
 	return c
 }
 
@@ -704,6 +706,53 @@ func isNoMoreChats(err error) bool {
 
 // extractMediaInfo 从消息内容提取下载所需的媒体信息（无媒体返回 nil）
 func (c *Client) extractMediaInfo(m *tdclient.Message) *downloader.MediaInfo {
+	mi := c.extractMediaFile(m)
+	if mi == nil {
+		return nil
+	}
+	mi.AlbumID = int64(m.MediaAlbumId)
+	mi.Caption = captionText(m.Content)
+	mi.SenderID = senderID(m.SenderId)
+	return mi
+}
+
+// captionText 提取消息内容的 caption 文本（无 caption 的类型返回空串）
+func captionText(content tdclient.MessageContent) string {
+	var ft *tdclient.FormattedText
+	switch c := content.(type) {
+	case *tdclient.MessagePhoto:
+		ft = c.Caption
+	case *tdclient.MessageVideo:
+		ft = c.Caption
+	case *tdclient.MessageDocument:
+		ft = c.Caption
+	case *tdclient.MessageAnimation:
+		ft = c.Caption
+	case *tdclient.MessageAudio:
+		ft = c.Caption
+	case *tdclient.MessageVoiceNote:
+		ft = c.Caption
+	}
+	if ft == nil {
+		return ""
+	}
+	return ft.Text
+}
+
+// senderID 提取发送者的 user/chat id
+func senderID(sender tdclient.MessageSender) int64 {
+	switch s := sender.(type) {
+	case *tdclient.MessageSenderUser:
+		return s.UserId
+	case *tdclient.MessageSenderChat:
+		return s.ChatId
+	default:
+		return 0
+	}
+}
+
+// extractMediaFile 按内容类型提取媒体文件信息（不含相册/caption/发送者等消息级字段）
+func (c *Client) extractMediaFile(m *tdclient.Message) *downloader.MediaInfo {
 	if m == nil || m.Content == nil {
 		return nil
 	}
@@ -917,27 +966,109 @@ func (c *Client) unregisterProgress(fileID int32) {
 	c.trackMu.Unlock()
 }
 
-// DownloadHistoryMedia 下载聊天历史中的全部媒体
-// historyCountFilters 与 extractMediaInfo 支持的媒体类型一一对应
-var historyCountFilters = []tdclient.SearchMessagesFilter{
-	&tdclient.SearchMessagesFilterPhoto{},
-	&tdclient.SearchMessagesFilterVideo{},
-	&tdclient.SearchMessagesFilterDocument{},
-	&tdclient.SearchMessagesFilterAudio{},
-	&tdclient.SearchMessagesFilterVoiceNote{},
-	&tdclient.SearchMessagesFilterAnimation{},
+// historyCountFilters 将媒体类型映射到服务端计数过滤器，与 extractMediaInfo 支持的类型一一对应
+var historyCountFilters = map[string]tdclient.SearchMessagesFilter{
+	mediaTypePhoto:     &tdclient.SearchMessagesFilterPhoto{},
+	mediaTypeVideo:     &tdclient.SearchMessagesFilterVideo{},
+	mediaTypeDocument:  &tdclient.SearchMessagesFilterDocument{},
+	mediaTypeAudio:     &tdclient.SearchMessagesFilterAudio{},
+	mediaTypeVoice:     &tdclient.SearchMessagesFilterVoiceNote{},
+	mediaTypeAnimation: &tdclient.SearchMessagesFilterAnimation{},
+}
+
+// ResolvedTarget 是 t.me 链接/公开用户名的解析结果；MessageID 非 0 表示指向单条消息
+type ResolvedTarget struct {
+	ChatID    int64  `json:"chat_id"`
+	Title     string `json:"chat_title"`
+	MessageID int64  `json:"message_id,omitempty"`
+}
+
+// ResolveTarget 解析下载目标：支持 @用户名、t.me/<name>、t.me/<name>/<msg>、
+// t.me/c/<id>/<msg> 及带 https:// 前缀的等价形式。私有链接要求当前账号可访问该聊天。
+func (c *Client) ResolveTarget(ctx context.Context, input string) (ResolvedTarget, error) {
+	td := c.client()
+	if td == nil {
+		return ResolvedTarget{}, errors.New("TDLib 未连接")
+	}
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return ResolvedTarget{}, errors.New("目标不能为空")
+	}
+
+	normalized := strings.TrimPrefix(strings.TrimPrefix(input, "https://"), "http://")
+	if path, ok := strings.CutPrefix(normalized, "t.me/"); ok {
+		if strings.HasPrefix(path, "+") || strings.HasPrefix(path, "joinchat/") {
+			return ResolvedTarget{}, errors.New("暂不支持邀请链接，请先加入该聊天后从列表选择")
+		}
+		// 含消息序号（t.me/<name>/<msg> 或 t.me/c/<id>/<msg>）走消息链接解析
+		if strings.Contains(path, "/") {
+			return c.resolveMessageLink(ctx, td, "https://t.me/"+path)
+		}
+		return c.resolvePublicChat(ctx, td, path)
+	}
+	return c.resolvePublicChat(ctx, td, strings.TrimPrefix(input, "@"))
+}
+
+// resolveMessageLink 经 GetMessageLinkInfo 解析消息链接
+func (c *Client) resolveMessageLink(ctx context.Context, td *tdclient.Client, url string) (ResolvedTarget, error) {
+	info, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.MessageLinkInfo, error) {
+		return td.GetMessageLinkInfo(cc, &tdclient.GetMessageLinkInfoRequest{Url: url})
+	})
+	if err != nil {
+		return ResolvedTarget{}, fmt.Errorf("解析消息链接失败: %w", err)
+	}
+	if info.ChatId == 0 {
+		return ResolvedTarget{}, errors.New("无法访问该链接指向的聊天（可能需要先加入）")
+	}
+	target := ResolvedTarget{ChatID: info.ChatId}
+	if info.Message != nil {
+		target.MessageID = info.Message.Id
+	}
+	if chat, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Chat, error) {
+		return td.GetChat(cc, &tdclient.GetChatRequest{ChatId: info.ChatId})
+	}); err == nil {
+		target.Title = chat.Title
+	}
+	return target, nil
+}
+
+// resolvePublicChat 按公开用户名解析聊天
+func (c *Client) resolvePublicChat(ctx context.Context, td *tdclient.Client, username string) (ResolvedTarget, error) {
+	if username == "" {
+		return ResolvedTarget{}, errors.New("用户名不能为空")
+	}
+	chat, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Chat, error) {
+		return td.SearchPublicChat(cc, &tdclient.SearchPublicChatRequest{Username: username})
+	})
+	if err != nil {
+		return ResolvedTarget{}, fmt.Errorf("找不到公开聊天 @%s: %w", username, err)
+	}
+	return ResolvedTarget{ChatID: chat.Id, Title: chat.Title}, nil
 }
 
 // CountHistoryMedia 统计聊天历史中可下载媒体的总数（服务端近似值）。
+// mediaTypes 非空时只统计选中的类型；日期/大小过滤无法在服务端预估，结果为上估。
 // 单个过滤器失败仅跳过；全部失败返回错误，调用方回退为未知总数。
-func (c *Client) CountHistoryMedia(ctx context.Context, chatID int64) (int64, error) {
+func (c *Client) CountHistoryMedia(ctx context.Context, chatID int64, mediaTypes []string) (int64, error) {
 	td := c.client()
 	if td == nil {
 		return 0, errors.New("TDLib 未连接")
 	}
+	selected := make([]tdclient.SearchMessagesFilter, 0, len(historyCountFilters))
+	if len(mediaTypes) == 0 {
+		for _, f := range historyCountFilters {
+			selected = append(selected, f)
+		}
+	} else {
+		for _, t := range mediaTypes {
+			if f, ok := historyCountFilters[t]; ok {
+				selected = append(selected, f)
+			}
+		}
+	}
 	var total int64
 	succeeded := 0
-	for _, filter := range historyCountFilters {
+	for _, filter := range selected {
 		f := filter
 		cnt, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Count, error) {
 			return td.GetChatMessageCount(cc, &tdclient.GetChatMessageCountRequest{
@@ -1035,6 +1166,17 @@ func (c *Client) DownloadHistoryMedia(ctx context.Context, spec downloader.Histo
 		return nil
 	}
 
+	// 单消息任务（t.me 消息链接）：只下载指定消息，不扫描历史
+	if spec.MessageID != 0 {
+		err := c.downloadSingleHistoryMessage(ctx, td, spec, dispatch)
+		wg.Wait()
+		if err != nil {
+			return err
+		}
+		c.downloader.PrintStats()
+		return nil
+	}
+
 	// 恢复任务先补下被重启清扫的中断行：这些消息比游标更新，续扫不会再经过
 	if len(spec.RetryMessageIDs) > 0 {
 		if err := c.retryInterruptedMessages(ctx, td, spec, dispatch); err != nil {
@@ -1067,7 +1209,7 @@ func (c *Client) DownloadHistoryMedia(ctx context.Context, spec downloader.Histo
 			}
 			emptyStreak = 0
 
-			media, lastMsgID := c.extractBatchMedia(pageMsgs, taskID)
+			media, lastMsgID, pastDateFrom := c.extractBatchMedia(pageMsgs, taskID, spec.Filters)
 			fromMsgID = lastMsgID // 推进到本页最旧消息
 			scannedMessages += int64(len(pageMsgs))
 			foundMedia += int64(len(media))
@@ -1080,6 +1222,10 @@ func (c *Client) DownloadHistoryMedia(ctx context.Context, spec downloader.Histo
 				if err := dispatch(m); err != nil {
 					return err
 				}
+			}
+			if pastDateFrom {
+				c.logger.Info("历史扫描已越过起始日期，提前结束")
+				return nil
 			}
 
 			if time.Since(lastScanLog) >= scanLogInterval {
@@ -1120,7 +1266,8 @@ func (c *Client) retryInterruptedMessages(
 			c.logger.Warn("补下中断媒体失败（消息 %d 可能已删除）: %v", msgID, err)
 			continue
 		}
-		if media := c.extractMediaInfo(msg); media != nil {
+		if media := c.extractMediaInfo(msg); media != nil &&
+			spec.Filters.Match(media.MediaType, int64(msg.Date), media.FileSize) {
 			media.TaskID = spec.TaskID
 			batch = append(batch, media)
 		}
@@ -1132,6 +1279,29 @@ func (c *Client) retryInterruptedMessages(
 		}
 	}
 	return nil
+}
+
+// downloadSingleHistoryMessage 下载单条消息的媒体（t.me 消息链接任务）
+func (c *Client) downloadSingleHistoryMessage(
+	ctx context.Context, td *tdclient.Client, spec downloader.HistorySpec,
+	dispatch func(*downloader.MediaInfo) error,
+) error {
+	msg, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Message, error) {
+		return td.GetMessage(cc, &tdclient.GetMessageRequest{ChatId: spec.ChatID, MessageId: spec.MessageID})
+	})
+	if err != nil {
+		return fmt.Errorf("获取消息 %d 失败: %w", spec.MessageID, err)
+	}
+	media := c.extractMediaInfo(msg)
+	if media == nil {
+		return fmt.Errorf("消息 %d 不包含可下载的媒体", spec.MessageID)
+	}
+	if !spec.Filters.Match(media.MediaType, int64(msg.Date), media.FileSize) {
+		return fmt.Errorf("消息 %d 的媒体被任务过滤器排除", spec.MessageID)
+	}
+	media.TaskID = spec.TaskID
+	c.downloader.PlanBatch([]*downloader.MediaInfo{media})
+	return dispatch(media)
 }
 
 // reportScanProgress 上报历史扫描进度与游标；未注册回调（CLI 模式）或无任务 ID 时静默
@@ -1165,17 +1335,24 @@ func fetchHistoryPage(ctx context.Context, td *tdclient.Client, chatID, fromMsgI
 	return pageMsgs, nil
 }
 
-// extractBatchMedia 从一页历史消息中提取媒体信息并打上任务ID，
-// 同时返回本页最旧消息ID供调用方推进下一页起点
-func (c *Client) extractBatchMedia(msgs []*tdclient.Message, taskID string) (media []*downloader.MediaInfo, lastMsgID int64) {
+// extractBatchMedia 从一页历史消息中提取媒体信息、按任务过滤器筛选并打上任务ID；
+// 返回本页最旧消息ID供调用方推进下一页起点，以及整页是否已早于 DateFrom（可提前停止翻页：
+// 历史页按新到旧返回，整页更旧则更早的页必然全部越界）
+func (c *Client) extractBatchMedia(
+	msgs []*tdclient.Message, taskID string, filters downloader.HistoryFilters,
+) (media []*downloader.MediaInfo, lastMsgID int64, pastDateFrom bool) {
+	pastDateFrom = len(msgs) > 0 && filters.DateFrom != 0
 	for _, m := range msgs {
-		if mi := c.extractMediaInfo(m); mi != nil {
+		if int64(m.Date) >= filters.DateFrom {
+			pastDateFrom = false
+		}
+		if mi := c.extractMediaInfo(m); mi != nil && filters.Match(mi.MediaType, int64(m.Date), mi.FileSize) {
 			mi.TaskID = taskID
 			media = append(media, mi)
 		}
 		lastMsgID = m.Id
 	}
-	return media, lastMsgID
+	return media, lastMsgID, pastDateFrom
 }
 
 // awaitNextHistoryPage 处理获取到空历史页时的退避逻辑：

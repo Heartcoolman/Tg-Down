@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -40,12 +41,14 @@ type task struct {
 	phase         string // 运行阶段（counting/downloading），仅内存态
 	expectedTotal int64  // 下载前统计出的媒体总数（近似值），0 表示未知
 
-	scannedMessages int64     // 历史扫描已翻阅的消息数（仅内存态，运行中有值）
-	foundMedia      int64     // 历史扫描累计发现的媒体数（仅内存态，运行中有值）
-	scanCursor      int64     // 历史扫描游标（持久化，重启恢复续扫起点）
-	attempts        int       // 自动重试已消耗次数（持久化）
-	resumed         bool      // 本任务是否为进程重启后恢复（需补下中断行）
-	lastScanNotify  time.Time // 上次扫描进度对外推送时刻，用于限频
+	scannedMessages int64                     // 历史扫描已翻阅的消息数（仅内存态，运行中有值）
+	foundMedia      int64                     // 历史扫描累计发现的媒体数（仅内存态，运行中有值）
+	scanCursor      int64                     // 历史扫描游标（持久化，重启恢复续扫起点）
+	attempts        int                       // 自动重试已消耗次数（持久化）
+	resumed         bool                      // 本任务是否为进程重启后恢复（需补下中断行）
+	filters         downloader.HistoryFilters // 任务级过滤条件（持久化，零值 = 不过滤）
+	messageID       int64                     // 单消息任务的目标消息 id（持久化，0 = 整聊天）
+	lastScanNotify  time.Time                 // 上次扫描进度对外推送时刻，用于限频
 
 	lastRecordNotify      time.Time // 上次下载记录对外推送时刻，用于限频
 	recordTrailingPending bool      // 是否已排定一次尾随推送（限频窗口内多次更新只排一次）
@@ -60,16 +63,18 @@ const scanNotifyMinGap = 500 * time.Millisecond
 // 不限频会向浏览器灌入成百上千条消息造成前端卡顿
 const recordNotifyMinGap = 250 * time.Millisecond
 
-// newTask 创建一个初始状态为 queued 的任务
-func newTask(kind Kind, chatID int64, chatTitle string) *task {
+// newTask 创建一个初始状态为 queued 的任务；spec 携带 ChatID/Filters/MessageID
+func newTask(kind Kind, spec downloader.HistorySpec, chatTitle string) *task {
 	return &task{
 		id:        generateID(),
 		kind:      kind,
-		chatID:    chatID,
+		chatID:    spec.ChatID,
 		chatTitle: chatTitle,
 		createdAt: time.Now(),
 		done:      make(chan struct{}),
 		status:    StatusQueued,
+		filters:   spec.Filters,
+		messageID: spec.MessageID,
 	}
 }
 
@@ -81,6 +86,10 @@ func (t *task) markDone() {
 // taskFromRow 是 ToDTO 的逆操作，从持久化行重建进程重启后的内存任务；
 // done/closeOnce 属于进程本地状态，无法持久化，此处总是全新初始化
 func taskFromRow(row *store.TaskRow) *task {
+	var filters downloader.HistoryFilters
+	if row.Filters != "" {
+		_ = json.Unmarshal([]byte(row.Filters), &filters) // 解析失败退化为不过滤
+	}
 	return &task{
 		id:            row.ID,
 		kind:          Kind(row.Kind),
@@ -95,6 +104,8 @@ func taskFromRow(row *store.TaskRow) *task {
 		expectedTotal: row.ExpectedTotal,
 		scanCursor:    row.ScanCursor,
 		attempts:      row.Attempts,
+		filters:       filters,
+		messageID:     row.MessageID,
 		stats: downloader.Stats{
 			Total:          row.Total,
 			Downloaded:     row.Downloaded,
@@ -106,11 +117,30 @@ func taskFromRow(row *store.TaskRow) *task {
 	}
 }
 
+// filtersJSON 返回过滤器的 JSON 序列化（零值返回空串，落库为 NULL）
+func (t *task) filtersJSON() string {
+	if t.filters.IsZero() {
+		return ""
+	}
+	data, err := json.Marshal(t.filters)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
 // ToDTO 加锁返回任务状态的值拷贝快照
 func (t *task) ToDTO() TaskDTO {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	var filters *downloader.HistoryFilters
+	if !t.filters.IsZero() {
+		f := t.filters
+		filters = &f
+	}
 	return TaskDTO{
+		Filters:         filters,
+		MessageID:       t.messageID,
 		ID:              t.id,
 		Kind:            string(t.kind),
 		ChatID:          t.chatID,
