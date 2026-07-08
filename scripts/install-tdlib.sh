@@ -31,8 +31,13 @@ case "$(uname -s)" in
     ;;
   Linux)
     if command -v apt-get >/dev/null 2>&1; then
-      sudo apt-get update -y || true # transient mirror failures are non-fatal; the install below still gates
-      sudo apt-get install -y make git zlib1g-dev libssl-dev gperf cmake g++
+      # 容器/root 环境无 sudo，直接调用 apt-get
+      SUDO="sudo"
+      if [ "$(id -u)" = "0" ] || ! command -v sudo >/dev/null 2>&1; then
+        SUDO=""
+      fi
+      $SUDO apt-get update -y || true # transient mirror failures are non-fatal; the install below still gates
+      $SUDO apt-get install -y make git zlib1g-dev libssl-dev gperf cmake g++
     fi
     ;;
 esac

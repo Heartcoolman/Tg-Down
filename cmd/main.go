@@ -45,7 +45,19 @@ const (
 	MaxModeChoice = 3
 )
 
+// version 由构建时 -ldflags "-X main.version=..." 注入
+var version = "dev"
+
 func main() {
+	telegram.SetAppVersion(version)
+	web.SetVersion(version)
+
+	// 版本信息: tg-down --version
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Printf("tg-down %s\n", version)
+		return
+	}
+
 	// 清除会话: tg-down --clear-session
 	if len(os.Args) > 1 && os.Args[1] == "--clear-session" {
 		clearSessionAndExit()

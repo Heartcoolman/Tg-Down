@@ -74,8 +74,6 @@ const (
 
 	copyBufferSize = 1 << 20 // 1MB copy buffer for cross-device fallback
 
-	// appVersion 上报给 TDLib 的设备/应用版本
-	appVersion = "1.0"
 	// dbDirPerm 是 TDLib 数据库目录权限
 	dbDirPerm = 0o700
 	// tdNotFoundCode 是 TDLib 列表耗尽时返回的错误码
@@ -83,6 +81,16 @@ const (
 	// logoutCloseTimeout 是 LogOut 后等待 TDLib 销毁本地数据并进入 closed 状态的上限
 	logoutCloseTimeout = 10 * time.Second
 )
+
+// appVersion 上报给 TDLib 的设备/应用版本，由 SetAppVersion 在启动时注入构建版本
+var appVersion = "dev"
+
+// SetAppVersion 设置上报给 TDLib 的应用版本（须在 NewClient/Connect 之前调用）
+func SetAppVersion(v string) {
+	if v != "" {
+		appVersion = v
+	}
+}
 
 // CodeFunc 提供登录验证码
 type CodeFunc func(ctx context.Context) (string, error)

@@ -408,8 +408,13 @@ func validateConfig(config *Config) error {
 	return nil
 }
 
-// SaveConfig 保存配置到文件
+// SaveConfig 保存配置到文件。设置 TG_DOWN_NO_CONFIG_WRITE 环境变量时跳过写入
+// （容器等纯环境变量部署场景，配置由 env 提供，不应写回 config.yaml）。
 func (c *Config) SaveConfig(filename string) error {
+	if os.Getenv("TG_DOWN_NO_CONFIG_WRITE") != "" {
+		fmt.Fprintln(os.Stderr, "[配置] TG_DOWN_NO_CONFIG_WRITE 已设置，跳过配置写回")
+		return nil
+	}
 	data, err := yaml.Marshal(c)
 	if err != nil {
 		return fmt.Errorf("序列化配置失败: %w", err)

@@ -12,18 +12,29 @@ env:
 
 jobs:
   # CGo + TDLib 无法交叉编译，故按平台原生构建（仅 linux-amd64 与 darwin-arm64）。
+  # Linux 在 debian:11 容器内构建以钉定 glibc 2.31 基线（修 #32：老系统跑不起新 runner 产物），
+  # 发布包自带 lib/（OpenSSL 1.1），rpath=$ORIGIN/lib，开箱即用。
   build:
     name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - runner: ubuntu-latest
             name: linux-amd64
+            container: debian:11
           - runner: macos-14
             name: darwin-arm64
+            container: ''
     steps:
+      - name: Install build deps (debian:11 container)
+        if: matrix.name == 'linux-amd64'
+        run: |
+          apt-get update
+          apt-get install -y build-essential cmake gperf git curl ca-certificates zlib1g-dev libssl-dev
+
       - name: Checkout code
         uses: actions/checkout@v6
 
@@ -38,10 +49,22 @@ jobs:
       - name: Test
         run: go test ./...
 
-      - name: Build
+      - name: Build (linux, self-contained rpath)
+        if: matrix.name == 'linux-amd64'
+        run: |
+          mkdir -p dist/pkg/lib
+          # 覆盖 setup-tdlib 导出的 rpath：发布包在用户机器上从 $ORIGIN/lib 找动态依赖
+          export CGO_LDFLAGS="-L$HOME/.tdlib/lib -Wl,-rpath,\$ORIGIN/lib -ltdjson_static -ltdjson_private -ltdclient -ltdcore -ltde2e -ltdmtproto -ltdactor -ltdapi -ltddb -ltdsqlite -ltdnet -ltdutils -lstdc++ -lssl -lcrypto -ldl -lz -lm"
+          go build -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o dist/pkg/tg-down ./cmd
+          # 捆绑 OpenSSL 1.1：debian:11 之后的发行版已不再提供该版本
+          cp /usr/lib/x86_64-linux-gnu/libssl.so.1.1 /usr/lib/x86_64-linux-gnu/libcrypto.so.1.1 dist/pkg/lib/
+          objdump -T dist/pkg/tg-down | grep -o 'GLIBC_2\.[0-9.]*' | sort -Vu | tail -1
+
+      - name: Build (macOS)
+        if: matrix.name == 'darwin-arm64'
         run: |
           mkdir -p dist/pkg
-          go build -ldflags="-s -w" -o dist/pkg/tg-down ./cmd
+          go build -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o dist/pkg/tg-down ./cmd
 
       - name: Assemble package
         run: |
@@ -52,7 +75,7 @@ jobs:
           cat > dist/pkg/start.sh <<'EOF'
           #!/bin/bash
           cd "$(dirname "$0")"
-          [ -f config.yaml ] || { echo "请先编辑 config.yaml 填入 API 信息"; exit 1; }
+          [ -d lib ] && export LD_LIBRARY_PATH="$(pwd)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           mkdir -p downloads sessions
           chmod +x tg-down
           ./tg-down "$@"
@@ -93,15 +116,16 @@ jobs:
           draft: false
           prerelease: false
           body: |
-            ## 📦 发布包（基于官方 TDLib 引擎）
+            ## 📦 发布包（官方 TDLib 引擎）
 
-            本版本下载引擎已切换为官方 TDLib，提供原生构建的二进制：
+            - **Linux x86_64**: `tg-down-linux-amd64.tar.gz`——在 debian:11 构建（glibc ≥ 2.31 即可运行，
+              覆盖 Debian 11+/Ubuntu 20.04+），OpenSSL 1.1 已随包捆绑于 `lib/`，开箱即用
+            - **macOS Apple Silicon**: `tg-down-darwin-arm64.tar.gz`——需 `brew install openssl@3`
+            - **Docker（推荐，含 arm64）**: `docker pull ghcr.io/heartcoolman/tg-down:latest`，
+              飞牛 fnOS 等 NAS 部署见 README「飞牛OS (fnOS) 部署」
 
-            - **Linux x86_64**: `tg-down-linux-amd64.tar.gz`
-            - **macOS Apple Silicon**: `tg-down-darwin-arm64.tar.gz`
-
-            > CGo 依赖 libtdjson 已静态链入；运行仍需系统 OpenSSL（Linux: libssl3；macOS: `brew install openssl@3`）。
-            > Windows 及交叉编译目标因 CGo 暂不提供，可在对应平台自行 `make tdlib && make build` 构建。
+            > TDLib 已静态链入二进制。Windows 及交叉编译目标因 CGo 暂不提供，
+            > 可在对应平台自行 `make tdlib && make build` 构建。
 
             ### 🚀 使用
             1. 解压，编辑 `config.yaml` 填入 Telegram API 信息（https://my.telegram.org/apps）
