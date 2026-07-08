@@ -3,13 +3,12 @@ api:
   hash: ""  # 你的API Hash
   phone: ""  # 你的手机号
 
+# 注：chunk_size / max_workers / rate_limit.* 已在 v2.0 移除（TDLib 自管分片/并行度/限流）
 download:
   path: "./downloads"  # 下载路径
   max_concurrent: 5    # 同时下载的文件数
   batch_size: 100      # 每批拉取的历史消息数
   partition_size: 100  # 历史下载在途媒体上限（扫描最多领先下载的数量）
-  chunk_size: 512      # 单文件分片大小 (KB)，可选: 4/8/16/32/64/128/256/512
-  max_workers: 4       # 单文件并行下载线程数 (多线程加速)
   disable_classify_by_type: false  # 按媒体类型归档默认开启；设为 true 可恢复旧版扁平目录布局
 
 chat:
@@ -26,11 +25,6 @@ retry:
   max_retries: 3       # 最大重试次数
   base_delay: 1        # 基础延迟时间 (秒)
   max_delay: 30        # 最大延迟时间 (秒)
-
-# 速率限制配置
-rate_limit:
-  requests_per_second: 5.0  # 每秒请求数
-  burst_size: 10            # 突发请求大小
 
 # 任务队列配置
 queue:

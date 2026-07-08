@@ -22,9 +22,9 @@ type TaskRow struct {
 	ExpectedTotal  int64
 }
 
-// 任务状态常量
+// 任务状态常量，取值与 internal/queue 的 Status 保持一致（queue 为唯一词汇源）
 const (
-	TaskStatusPending   = "pending"
+	TaskStatusQueued    = "queued"
 	TaskStatusRunning   = "running"
 	TaskStatusCompleted = "completed"
 	TaskStatusFailed    = "failed"

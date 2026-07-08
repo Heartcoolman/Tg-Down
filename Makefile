@@ -1,15 +1,20 @@
 # Makefile for Telegram Media Downloader (TDLib engine)
 
-.PHONY: all build run clean deps help install config tdlib rust-core dev
+.PHONY: all build run clean deps help install config tdlib dev
 
 # TDLib 安装前缀（scripts/install-tdlib.sh 默认装到这里）
 TDLIB_PREFIX ?= $(HOME)/.tdlib
 # OpenSSL 前缀（macOS Homebrew: openssl@3；Linux 通常留空）
 OPENSSL_PREFIX ?= $(shell command -v brew >/dev/null 2>&1 && brew --prefix openssl@3 2>/dev/null)
 
+# go-tdlib master 起 darwin 不再内置链接指令（linux 默认静态链接由绑定自带），
+# macOS 需显式给出 TDLib 静态库列表
+TDLIB_STATIC_LIBS = -ltdjson_static -ltdjson_private -ltdclient -ltdcore -ltde2e -ltdmtproto -ltdactor -ltdapi -ltddb -ltdsqlite -ltdnet -ltdutils -lstdc++ -lssl -lcrypto -ldl -lz -lm
+UNAME_S := $(shell uname -s)
+
 export CGO_ENABLED = 1
 export CGO_CFLAGS = -I$(TDLIB_PREFIX)/include $(if $(OPENSSL_PREFIX),-I$(OPENSSL_PREFIX)/include,)
-export CGO_LDFLAGS = -L$(TDLIB_PREFIX)/lib -Wl,-rpath,$(TDLIB_PREFIX)/lib $(if $(OPENSSL_PREFIX),-L$(OPENSSL_PREFIX)/lib,)
+export CGO_LDFLAGS = -L$(TDLIB_PREFIX)/lib -Wl,-rpath,$(TDLIB_PREFIX)/lib $(if $(OPENSSL_PREFIX),-L$(OPENSSL_PREFIX)/lib,) $(if $(filter Darwin,$(UNAME_S)),$(TDLIB_STATIC_LIBS),)
 
 # 默认目标
 all: build
@@ -24,13 +29,6 @@ build:
 	@echo "正在编译Telegram媒体下载器 (CGo + TDLib)..."
 	@go build -o tg-down ./cmd
 	@echo "编译完成！"
-
-# 构建 Rust 业务层 helper（可选；Go 主流程会自动检测并使用，缺失时走 Go 兜底）
-rust-core:
-	@echo "正在编译 Rust 业务层 helper..."
-	@cargo build --manifest-path rust/tg_down_core/Cargo.toml --release
-	@cp rust/tg_down_core/target/release/tg-down-core ./tg-down-core
-	@echo "Rust helper 已生成: ./tg-down-core"
 
 # 运行程序
 run: build
@@ -47,7 +45,6 @@ deps:
 clean:
 	@echo "正在清理构建文件..."
 	@rm -f tg-down tg-down.exe
-	@rm -f tg-down-core tg-down-core.exe
 	@echo "清理完成！"
 
 # 安装到系统路径
@@ -70,7 +67,6 @@ config:
 help:
 	@echo "可用的命令:"
 	@echo "  make tdlib   - 构建并安装 TDLib (首次必需)"
-	@echo "  make rust-core - 构建 Rust 业务层 helper (可选)"
 	@echo "  make build   - 编译程序"
 	@echo "  make run     - 编译并运行程序"
 	@echo "  make deps    - 下载依赖"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build & install TDLib (libtdjson) at the commit pinned by zelenin/go-tdlib v1.0.0-beta1.
+# Build & install TDLib (libtdjson) at the commit pinned by zelenin/go-tdlib master (0dd3ea6, 2026-05-09).
 # Installs to a writable custom prefix (no sudo). Used by local dev and CI.
 #
 #   TDLIB_PREFIX  install prefix            (default: $HOME/.tdlib)
@@ -13,8 +13,8 @@
 set -euo pipefail
 
 PREFIX="${TDLIB_PREFIX:-$HOME/.tdlib}"
-# Pinned to match github.com/zelenin/go-tdlib v1.0.0-beta1 (TDLib 2024-11-27).
-TDLIB_COMMIT="${TDLIB_COMMIT:-b498497bbfd6b80c86f800b3546a0170206317d3}"
+# Pinned to match github.com/zelenin/go-tdlib master 0dd3ea6 (TDLib 2026-05-08).
+TDLIB_COMMIT="${TDLIB_COMMIT:-49b3bcbb6bfebf2ed44dd9f25102d2e1a94a58c4}"
 SRC="${TDLIB_SRC:-$HOME/.cache/tdlib-src}"
 JOBS="${JOBS:-4}"
 

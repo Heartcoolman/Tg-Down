@@ -191,8 +191,6 @@ go build -o tg-down ./cmd && ./tg-down
 | `download.path` | 下载路径 | `./downloads` |
 | `download.max_concurrent` | 同时下载的文件数 | `5` |
 | `download.batch_size` | 每批拉取的历史消息数 | `100` |
-| `download.chunk_size` | ~~单文件分片大小~~（已废弃：TDLib 自管分片，配置无效） | `512` |
-| `download.max_workers` | ~~单文件并行线程数~~（已废弃：TDLib 自管单文件并行度） | `4` |
 | `session.dir` | TDLib 数据库/会话根目录（实际位于 `<dir>/tdlib`） | `./sessions` |
 | `chat.target_id` | 目标群组ID（可选） | `0` |
 | `log.level` | 日志级别 | `info` |

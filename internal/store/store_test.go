@@ -31,7 +31,7 @@ func TestTaskCRUDRoundTrip(t *testing.T) {
 		Kind:          "scan",
 		ChatID:        100,
 		ChatTitle:     "测试群组",
-		Status:        TaskStatusPending,
+		Status:        TaskStatusQueued,
 		CreatedAt:     created,
 		ExpectedTotal: 42,
 	}
@@ -46,7 +46,7 @@ func TestTaskCRUDRoundTrip(t *testing.T) {
 	if got == nil {
 		t.Fatal("GetTask() = nil, want task")
 	}
-	if got.Kind != "scan" || got.ChatTitle != "测试群组" || got.Status != TaskStatusPending || got.ExpectedTotal != 42 {
+	if got.Kind != "scan" || got.ChatTitle != "测试群组" || got.Status != TaskStatusQueued || got.ExpectedTotal != 42 {
 		t.Fatalf("GetTask() = %+v, mismatch", got)
 	}
 	if got.StartedAt != nil || got.FinishedAt != nil {
@@ -98,7 +98,7 @@ func TestTaskCRUDRoundTrip(t *testing.T) {
 
 	// 第二个任务，验证 ListTasks 按 created_at 倒序
 	task2 := &TaskRow{
-		ID: "task-2", Kind: "scan", ChatID: 200, Status: TaskStatusPending,
+		ID: "task-2", Kind: "scan", ChatID: 200, Status: TaskStatusQueued,
 		CreatedAt: created.Add(time.Minute),
 	}
 	if err := s.CreateTask(ctx, task2); err != nil {
@@ -162,7 +162,7 @@ INSERT INTO tasks (id, kind, chat_id, status, created_at) VALUES ('legacy-1', 'h
 		t.Fatalf("GetTask(legacy-1) = %+v, want ExpectedTotal 0", got)
 	}
 
-	task := &TaskRow{ID: "new-1", Kind: "history", ChatID: 2, Status: TaskStatusPending, CreatedAt: time.Now(), ExpectedTotal: 7}
+	task := &TaskRow{ID: "new-1", Kind: "history", ChatID: 2, Status: TaskStatusQueued, CreatedAt: time.Now(), ExpectedTotal: 7}
 	if err := s.CreateTask(ctx, task); err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}

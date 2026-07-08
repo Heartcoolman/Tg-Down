@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"tg-down/internal/logger"
-	"tg-down/internal/rustcore"
 )
 
 const (
@@ -708,10 +707,10 @@ func (d *Downloader) updateStats(downloaded bool, size int64) {
 
 // DownloadMedia 下载媒体文件
 func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error {
-	chatDir, fileName, filePath := d.planMediaPath(ctx, media)
+	chatDir, fileName, filePath := d.planMediaPath(media)
 	media.FileName = fileName
 
-	// 先做路径安全校验，再创建目录：chatDir/filePath 均来自（可能有缺陷或恶意的）helper 输出，
+	// 先做路径安全校验，再创建目录：文件名来自远端消息，
 	// 必须在任何 MkdirAll 之前确认其位于下载根目录内，避免在校验前于任意可写路径建目录。
 	if !d.isSafePath(chatDir, d.downloadPath) || !d.isSafePath(filePath, d.downloadPath) {
 		d.logger.Error("不安全的文件路径: %s", filePath)
@@ -809,25 +808,7 @@ func (d *Downloader) downloadedBytes(key string) int64 {
 	return 0
 }
 
-func (d *Downloader) planMediaPath(ctx context.Context, media *MediaInfo) (chatDir, fileName, filePath string) {
-	plan, err := rustcore.PlanMediaPath(ctx, d.downloadPath, d.classifyByType.Load(), rustcore.MediaInfo{
-		MessageID: media.MessageID,
-		TDFileID:  media.TDFileID,
-		MediaType: media.MediaType,
-		FileName:  media.FileName,
-		FileSize:  media.FileSize,
-		MimeType:  media.MimeType,
-		ChatID:    media.ChatID,
-		TaskID:    media.TaskID,
-	})
-	if err == nil {
-		return plan.Directory, plan.FileName, plan.FilePath
-	}
-	d.logger.Debug("Rust 业务层路径规划不可用，使用 Go 兜底: %v", err)
-	return d.planMediaPathGo(media)
-}
-
-func (d *Downloader) planMediaPathGo(media *MediaInfo) (chatDir, fileName, filePath string) {
+func (d *Downloader) planMediaPath(media *MediaInfo) (chatDir, fileName, filePath string) {
 	chatDir = filepath.Join(d.downloadPath, fmt.Sprintf("chat_%d", media.ChatID))
 	if d.classifyByType.Load() {
 		chatDir = filepath.Join(chatDir, classifyDir(media.MediaType))

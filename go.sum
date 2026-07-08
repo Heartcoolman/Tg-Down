@@ -21,8 +21,8 @@ github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOF
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
-github.com/zelenin/go-tdlib v1.0.0-beta1 h1:Z+CeqmnbhZyrm+GA6WAamgP64tWFYQA1Ze7fHtCBx+4=
-github.com/zelenin/go-tdlib v1.0.0-beta1/go.mod h1:rnHzyHJ4Gn54sFVALInIgnCNDVKzhCuvEIvdBY+xyxU=
+github.com/zelenin/go-tdlib v1.0.0-beta1.0.20260509025013-0dd3ea652682 h1:Kqe83oDhnaoP1vZyeWedpyIhG3umZfiPj1ScilOQHcQ=
+github.com/zelenin/go-tdlib v1.0.0-beta1.0.20260509025013-0dd3ea652682/go.mod h1:rnHzyHJ4Gn54sFVALInIgnCNDVKzhCuvEIvdBY+xyxU=
 golang.org/x/mod v0.36.0 h1:JJjpVx6myfUsUdAzZuOSTTmRE0PfZeNWzzvKrP7amb4=
 golang.org/x/mod v0.36.0/go.mod h1:moc6ELqsWcOw5Ef3xVprK5ul/MvtVvkIXLziUOICjUQ=
 golang.org/x/sync v0.20.0 h1:e0PTpb7pjO8GAtTs2dQ6jYa5BWYlMuX047Dco/pItO4=

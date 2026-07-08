@@ -125,6 +125,10 @@ func migrateTasksTable(ctx context.Context, db *sql.DB) error {
 	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("迁移 tasks 表失败: %w", err)
 	}
+	// v2.0 统一状态词汇：历史遗留的 pending 归一为 queued（幂等）
+	if _, err := db.ExecContext(ctx, `UPDATE tasks SET status='queued' WHERE status='pending'`); err != nil {
+		return fmt.Errorf("迁移 tasks 状态词汇失败: %w", err)
+	}
 	return nil
 }
 
