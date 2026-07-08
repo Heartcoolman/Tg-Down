@@ -64,7 +64,7 @@ const scanNotifyMinGap = 500 * time.Millisecond
 const recordNotifyMinGap = 250 * time.Millisecond
 
 // newTask 创建一个初始状态为 queued 的任务；spec 携带 ChatID/Filters/MessageID
-func newTask(kind Kind, spec downloader.HistorySpec, chatTitle string) *task {
+func newTask(kind Kind, spec *downloader.HistorySpec, chatTitle string) *task {
 	return &task{
 		id:        generateID(),
 		kind:      kind,

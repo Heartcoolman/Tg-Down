@@ -53,7 +53,7 @@ func (m *Manager) fireDueSchedules(ctx context.Context) {
 		if r.Filters != "" {
 			_ = json.Unmarshal([]byte(r.Filters), &filters) // 解析失败退化为不过滤
 		}
-		spec := downloader.HistorySpec{ChatID: r.ChatID, Filters: filters}
+		spec := &downloader.HistorySpec{ChatID: r.ChatID, Filters: filters}
 		if _, err := m.Enqueue(KindHistory, spec, r.ChatTitle); err != nil {
 			// 常见于同聊天已有排队/运行中的任务，跳过本次触发
 			m.logger.Info("定时计划 %s（聊天 %d）本次触发跳过: %v", r.ID, r.ChatID, err)

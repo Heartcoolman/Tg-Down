@@ -80,6 +80,8 @@ WHERE id = ?`
 }
 
 // ListTasks 返回全部任务，按创建时间倒序排列
+//
+//nolint:dupl // 与 ListSchedules 结构同形但行类型/扫描器不同，泛型化收益低于可读性损失
 func (s *Store) ListTasks(ctx context.Context) ([]*TaskRow, error) {
 	const q = `
 SELECT id, kind, chat_id, chat_title, status, created_at, started_at, finished_at,

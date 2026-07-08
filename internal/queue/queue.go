@@ -42,7 +42,7 @@ const (
 // 使本包可在无真实 TDLib 连接的情况下进行单元测试。
 type ChatDownloader interface {
 	CountHistoryMedia(ctx context.Context, chatID int64, mediaTypes []string) (int64, error)
-	DownloadHistoryMedia(ctx context.Context, spec downloader.HistorySpec) error
+	DownloadHistoryMedia(ctx context.Context, spec *downloader.HistorySpec) error
 	SetMonitorTask(taskID string, chatID int64)
 	SetRecordFunc(fn func(context.Context, downloader.RecordEvent))
 	SetScanProgressFunc(fn func(taskID string, scannedMessages, foundMedia, scanCursor int64))

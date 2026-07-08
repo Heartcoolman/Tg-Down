@@ -39,7 +39,7 @@ func New(selfSend func(ctx context.Context, text string) error, webhookURL strin
 }
 
 // TaskFinished 异步发送任务终结通知（按任务粒度，绝不按文件）
-func (n *Notifier) TaskFinished(dto queue.TaskDTO) {
+func (n *Notifier) TaskFinished(dto *queue.TaskDTO) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
 		defer cancel()
@@ -57,7 +57,7 @@ func (n *Notifier) TaskFinished(dto queue.TaskDTO) {
 }
 
 // formatMessage 生成 Saved Messages 通知文本
-func formatMessage(dto queue.TaskDTO) string {
+func formatMessage(dto *queue.TaskDTO) string {
 	title := dto.ChatTitle
 	if title == "" {
 		title = fmt.Sprintf("ID %d", dto.ChatID)
@@ -72,7 +72,7 @@ func formatMessage(dto queue.TaskDTO) string {
 }
 
 // postWebhook 向 webhookURL POST 任务 JSON（外层包 event 字段）
-func (n *Notifier) postWebhook(ctx context.Context, dto queue.TaskDTO) error {
+func (n *Notifier) postWebhook(ctx context.Context, dto *queue.TaskDTO) error {
 	payload, err := json.Marshal(map[string]any{
 		"event": "task_finished",
 		"task":  dto,
@@ -90,7 +90,7 @@ func (n *Notifier) postWebhook(ctx context.Context, dto queue.TaskDTO) error {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= 300 {
+	if resp.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("webhook 返回 %s", resp.Status)
 	}
 	return nil

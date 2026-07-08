@@ -48,7 +48,7 @@ type Manager struct {
 	order       []*task // 插入顺序（最早在前），List() 据此反转为最新优先
 	monitorTask *task
 	onChange    func(*TaskDTO)
-	onTerminal  func(TaskDTO) // 任务终结通知（completed/最终 failed，取消与自动重试不触发）
+	onTerminal  func(*TaskDTO) // 任务终结通知（completed/最终 failed，取消与自动重试不触发）
 	runCtx      context.Context
 
 	monitorMu sync.Mutex // 串行化 monitor 切换，保证同一时刻至多一个 monitor 任务在运行
@@ -178,7 +178,7 @@ func (m *Manager) SetOnChange(fn func(*TaskDTO)) {
 
 // SetOnTerminal 设置任务终结回调：completed 与自动重试耗尽后的最终 failed 触发，
 // canceled 与重试中的中间失败不触发；按任务粒度调用
-func (m *Manager) SetOnTerminal(fn func(TaskDTO)) {
+func (m *Manager) SetOnTerminal(fn func(*TaskDTO)) {
 	m.mu.Lock()
 	m.onTerminal = fn
 	m.mu.Unlock()
@@ -190,7 +190,8 @@ func (m *Manager) fireTerminal(t *task) {
 	fn := m.onTerminal
 	m.mu.Unlock()
 	if fn != nil {
-		fn(t.ToDTO())
+		dto := t.ToDTO()
+		fn(&dto)
 	}
 }
 
@@ -372,7 +373,7 @@ func (m *Manager) runHistoryTask(ctx context.Context, t *task) {
 	}
 	t.mu.Lock()
 	t.phase = phaseDownloading
-	spec := downloader.HistorySpec{
+	spec := &downloader.HistorySpec{
 		ChatID:        t.chatID,
 		TaskID:        t.id,
 		FromMessageID: t.scanCursor,
@@ -467,7 +468,7 @@ func (m *Manager) scheduleRetry(t *task, attempt int, cause error) {
 // Enqueue 创建并提交一个新任务。history 任务进入有界 worker 池排队；
 // monitor 任务立即以独立 goroutine 长期运行（不占用 history 配额），ChatID 为 0 表示停止监控。
 // spec 携带 ChatID 以及 history 任务的过滤器/单消息参数（monitor 忽略后两者）。
-func (m *Manager) Enqueue(kind Kind, spec downloader.HistorySpec, chatTitle string) (TaskDTO, error) {
+func (m *Manager) Enqueue(kind Kind, spec *downloader.HistorySpec, chatTitle string) (TaskDTO, error) {
 	switch kind {
 	case KindHistory:
 		return m.enqueueHistory(spec, chatTitle)
@@ -480,7 +481,7 @@ func (m *Manager) Enqueue(kind Kind, spec downloader.HistorySpec, chatTitle stri
 
 // enqueueHistory 创建 history 任务、持久化后投递给 worker 池；
 // 排队中/运行中的重复任务拒绝创建（整聊天任务按 chatID 去重，单消息任务按 (chatID, messageID) 去重）
-func (m *Manager) enqueueHistory(spec downloader.HistorySpec, chatTitle string) (TaskDTO, error) {
+func (m *Manager) enqueueHistory(spec *downloader.HistorySpec, chatTitle string) (TaskDTO, error) {
 	m.mu.Lock()
 	for _, existing := range m.tasks {
 		if existing.kind != KindHistory || existing.chatID != spec.ChatID {
@@ -537,7 +538,7 @@ func (m *Manager) enqueueMonitor(chatID int64, chatTitle string) (TaskDTO, error
 		return TaskDTO{}, nil
 	}
 
-	t := newTask(KindMonitor, downloader.HistorySpec{ChatID: chatID}, chatTitle)
+	t := newTask(KindMonitor, &downloader.HistorySpec{ChatID: chatID}, chatTitle)
 	t.mu.Lock()
 	t.status = StatusRunning
 	now := time.Now()
@@ -689,7 +690,7 @@ func (m *Manager) Retry(id string) (TaskDTO, error) {
 
 	t.mu.Lock()
 	status, kind, chatTitle := t.status, t.kind, t.chatTitle
-	spec := downloader.HistorySpec{ChatID: t.chatID, Filters: t.filters, MessageID: t.messageID}
+	spec := &downloader.HistorySpec{ChatID: t.chatID, Filters: t.filters, MessageID: t.messageID}
 	t.mu.Unlock()
 
 	if status != StatusFailed && status != StatusCanceled {

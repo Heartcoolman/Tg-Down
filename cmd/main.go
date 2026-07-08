@@ -154,7 +154,7 @@ func runWeb(cfg *config.Config, log *logger.Logger, addr string) error {
 	defer cancel()
 
 	if err := web.New(client, st, log, addr, cfg).Run(ctx); err != nil {
-		return fmt.Errorf("Web 服务运行失败: %w", err)
+		return fmt.Errorf("web 服务运行失败: %w", err)
 	}
 	return nil
 }
@@ -222,7 +222,7 @@ func executeMode(
 	case ModeDownloadHistory:
 		return executeDownloadHistory(ctx, client, log, targetChatID)
 	case ModeMonitorNewMessages:
-		return executeMonitorNewMessages(ctx, cancel, client, log, targetChatID)
+		return executeMonitorNewMessages(ctx, cancel, log, targetChatID)
 	case ModeDownloadAndMonitor:
 		return executeDownloadAndMonitor(ctx, client, log, targetChatID)
 	default:
@@ -252,7 +252,7 @@ func executeDownloadHistory(ctx context.Context, client *telegram.Client, log *l
 		return nil
 	}
 	taskID := fmt.Sprintf("cli-history-%d", time.Now().UnixNano())
-	spec := downloader.HistorySpec{ChatID: targetChatID, TaskID: taskID}
+	spec := &downloader.HistorySpec{ChatID: targetChatID, TaskID: taskID}
 	if err := client.DownloadHistoryMedia(ctx, spec); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil
@@ -266,14 +266,13 @@ func executeDownloadHistory(ctx context.Context, client *telegram.Client, log *l
 func executeMonitorNewMessages(
 	ctx context.Context,
 	cancel context.CancelFunc,
-	client *telegram.Client,
 	log *logger.Logger,
 	targetChatID int64,
 ) error {
 	log.Info("开始实时监控新消息...")
 	log.Info("实时监控已启动，目标聊天ID: %d", targetChatID)
 
-	startInteractiveMonitoring(ctx, cancel, client, log, targetChatID)
+	startInteractiveMonitoring(ctx, cancel, log, targetChatID)
 	<-ctx.Done()
 	return nil
 }
@@ -285,7 +284,7 @@ func executeDownloadAndMonitor(ctx context.Context, client *telegram.Client, log
 		return nil
 	}
 	taskID := fmt.Sprintf("cli-history-%d", time.Now().UnixNano())
-	spec := downloader.HistorySpec{ChatID: targetChatID, TaskID: taskID}
+	spec := &downloader.HistorySpec{ChatID: targetChatID, TaskID: taskID}
 	if err := client.DownloadHistoryMedia(ctx, spec); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil
@@ -302,7 +301,6 @@ func executeDownloadAndMonitor(ctx context.Context, client *telegram.Client, log
 func startInteractiveMonitoring(
 	ctx context.Context,
 	cancel context.CancelFunc,
-	client *telegram.Client,
 	log *logger.Logger,
 	targetChatID int64,
 ) {
