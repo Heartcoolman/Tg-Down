@@ -31,9 +31,12 @@ jobs:
     steps:
       - name: Install build deps (debian:11 container)
         if: matrix.name == 'linux-amd64'
+        # bullseye 的 gcc-10 编译新版 TDLib 会 ICE（段错误），改用 clang-11
         run: |
           apt-get update
-          apt-get install -y build-essential cmake gperf git curl ca-certificates zlib1g-dev libssl-dev
+          apt-get install -y build-essential clang cmake gperf git curl ca-certificates zlib1g-dev libssl-dev
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
 
       - name: Checkout code
         uses: actions/checkout@v6
@@ -114,7 +117,8 @@ jobs:
             artifacts/checksums.txt
           generate_release_notes: true
           draft: false
-          prerelease: false
+          # 含 '-' 的 tag（如 v2.0.0-rc1）自动标记为预发布
+          prerelease: ${{ contains(github.ref_name, '-') }}
           body: |
             ## 📦 发布包（官方 TDLib 引擎）
 
