@@ -13,20 +13,18 @@
 **包含的作业**:
 
 #### 1. 测试作业 (test)
-- **环境**: Ubuntu Latest, Go 1.21
+- **环境**: Ubuntu Latest, Go 1.25（TDLib 经 `.github/actions/setup-tdlib` 构建并缓存）
 - **步骤**:
   - 检出代码
-  - 设置Go环境
+  - 设置Go环境与 TDLib CGo 环境
   - 下载并验证依赖
   - 运行 `go vet` 静态分析
   - 运行 `go test` 单元测试
   - 构建应用程序
   - 上传构建产物
 
-#### 2. 安全扫描 (security)
-- **工具**: Gosec
-- **功能**: 扫描Go代码中的安全漏洞
-- **输出**: SARIF格式的安全报告
+#### 2. 安全扫描
+- **工具**: Gosec（已集成进 golangci-lint 统一执行）
 
 #### 3. 依赖提交 (dependency-submission)
 - **工具**: go-dependency-submission
@@ -36,18 +34,27 @@
 ### 📦 发布流水线 (`release.yml`)
 
 **触发条件**:
-- 推送版本标签 (格式: `v*`, 如 `v1.0.0`)
+- 推送版本标签 (格式: `v*`, 如 `v2.0.0`)——由维护者手动打 tag
+  （`auto-release.yml` 已改为仅手动触发，不再按提交关键词自动铸版）
 
-**构建矩阵**:
-- **Linux**: AMD64, ARM64
-- **Windows**: AMD64
-- **macOS**: AMD64, ARM64
+**构建矩阵**（CGo + TDLib 无法交叉编译，按平台原生构建）:
+- **Linux AMD64**: 在 `debian:11` 容器内构建（glibc 2.31 基线），发布包自带 `lib/`
+  （OpenSSL 1.1）与 `$ORIGIN/lib` rpath，开箱即用
+- **macOS Apple Silicon (arm64)**: macos-14 原生构建
 
 **发布流程**:
-1. 多平台并行构建
+1. 双平台并行构建（注入 `-X main.version=<tag>`）
 2. 生成SHA256校验和
 3. 创建GitHub Release
 4. 上传所有构建产物和校验和文件
+
+### 🐳 镜像流水线 (`docker.yml`)
+
+**触发条件**: 推送版本标签或手动触发
+
+**构建方式**: amd64（ubuntu-latest）与 arm64（ubuntu-24.04-arm）在各自原生 runner
+构建（禁用 QEMU——模拟编译 TDLib 需数小时），按 digest 推送后合并 manifest，
+产出 `ghcr.io/heartcoolman/tg-down:{latest,v*}` 多架构镜像。
 
 ### 🔍 代码质量检查 (`code-quality.yml`)
 

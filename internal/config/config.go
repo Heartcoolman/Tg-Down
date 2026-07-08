@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v3"
@@ -32,6 +33,8 @@ const (
 
 	// 默认队列配置
 	DefaultMaxConcurrentTasks = 1
+	// DefaultAutoRetry 是 history 任务失败后的自动重试上限（0 = 关闭）
+	DefaultAutoRetry = 2
 
 	// 默认存储配置
 	DefaultStorePath = "./tg-down.db"
@@ -51,6 +54,15 @@ type Config struct {
 	Retry    RetryConfig    `yaml:"retry"`
 	Queue    QueueConfig    `yaml:"queue"`
 	Store    StoreConfig    `yaml:"store"`
+	Notify   NotifyConfig   `yaml:"notify"`
+}
+
+// NotifyConfig 任务完成通知配置
+type NotifyConfig struct {
+	// TelegramSelf 为 true 时任务终结（完成/最终失败）向自己的 Saved Messages 发消息
+	TelegramSelf bool `yaml:"telegram_self"`
+	// WebhookURL 非空时任务终结向该地址 POST JSON
+	WebhookURL string `yaml:"webhook_url"`
 }
 
 // APIConfig Telegram API配置
@@ -66,6 +78,8 @@ type DownloadConfig struct {
 	MaxConcurrent int    `yaml:"max_concurrent"` // 同时下载的文件数
 	BatchSize     int    `yaml:"batch_size"`     // 每批拉取的历史消息数
 	PartitionSize int    `yaml:"partition_size"` // 历史下载在途媒体上限（扫描最多领先下载的数量）
+	// SaveMetadata 为 true 时在每个下载文件旁写 <文件>.json 元数据（caption/发送者/日期等）
+	SaveMetadata bool `yaml:"save_metadata"`
 	// DisableClassifyByType 为 true 时关闭按媒体类型归档（默认归档开启）
 	DisableClassifyByType bool `yaml:"disable_classify_by_type"`
 }
@@ -95,6 +109,19 @@ type SessionConfig struct {
 // QueueConfig 任务队列配置
 type QueueConfig struct {
 	MaxConcurrentTasks int `yaml:"max_concurrent_tasks"` // 同时运行的历史下载任务数（监控任务不占用此配额，独立运行）
+	// AutoRetry 是 history 任务失败后的自动重试上限；nil（未配置）取默认值，显式 0 关闭
+	AutoRetry *int `yaml:"auto_retry"`
+}
+
+// AutoRetryCount 返回生效的自动重试上限（未配置时为 DefaultAutoRetry）
+func (q QueueConfig) AutoRetryCount() int {
+	if q.AutoRetry == nil {
+		return DefaultAutoRetry
+	}
+	if *q.AutoRetry < 0 {
+		return 0
+	}
+	return *q.AutoRetry
 }
 
 // StoreConfig 持久化存储配置
@@ -207,6 +234,17 @@ func loadFromEnv(config *Config) {
 	loadRetryConfig(config)
 	loadQueueConfig(config)
 	loadStoreConfig(config)
+	loadNotifyConfig(config)
+}
+
+// loadNotifyConfig 加载通知配置
+func loadNotifyConfig(config *Config) {
+	if v := os.Getenv("NOTIFY_TELEGRAM_SELF"); v != "" {
+		config.Notify.TelegramSelf = v == "1" || strings.EqualFold(v, "true")
+	}
+	if v := os.Getenv("NOTIFY_WEBHOOK_URL"); v != "" {
+		config.Notify.WebhookURL = v
+	}
 }
 
 // loadAPIConfig 加载API配置
@@ -248,6 +286,10 @@ func loadDownloadConfig(config *Config) {
 		if partition, err := strconv.Atoi(partitionSize); err == nil {
 			config.Download.PartitionSize = partition
 		}
+	}
+
+	if saveMetadata := os.Getenv("SAVE_METADATA"); saveMetadata != "" {
+		config.Download.SaveMetadata = saveMetadata == "1" || strings.EqualFold(saveMetadata, "true")
 	}
 }
 
@@ -300,6 +342,11 @@ func loadQueueConfig(config *Config) {
 	if maxConcurrentTasks := os.Getenv("MAX_CONCURRENT_TASKS"); maxConcurrentTasks != "" {
 		if tasks, err := strconv.Atoi(maxConcurrentTasks); err == nil {
 			config.Queue.MaxConcurrentTasks = tasks
+		}
+	}
+	if autoRetry := os.Getenv("AUTO_RETRY"); autoRetry != "" {
+		if n, err := strconv.Atoi(autoRetry); err == nil {
+			config.Queue.AutoRetry = &n
 		}
 	}
 }
@@ -361,8 +408,13 @@ func validateConfig(config *Config) error {
 	return nil
 }
 
-// SaveConfig 保存配置到文件
+// SaveConfig 保存配置到文件。设置 TG_DOWN_NO_CONFIG_WRITE 环境变量时跳过写入
+// （容器等纯环境变量部署场景，配置由 env 提供，不应写回 config.yaml）。
 func (c *Config) SaveConfig(filename string) error {
+	if os.Getenv("TG_DOWN_NO_CONFIG_WRITE") != "" {
+		fmt.Fprintln(os.Stderr, "[配置] TG_DOWN_NO_CONFIG_WRITE 已设置，跳过配置写回")
+		return nil
+	}
 	data, err := yaml.Marshal(c)
 	if err != nil {
 		return fmt.Errorf("序列化配置失败: %w", err)

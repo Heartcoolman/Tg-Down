@@ -9,6 +9,7 @@ download:
   max_concurrent: 5    # 同时下载的文件数
   batch_size: 100      # 每批拉取的历史消息数
   partition_size: 100  # 历史下载在途媒体上限（扫描最多领先下载的数量）
+  save_metadata: false # 为 true 时在每个下载文件旁写 <文件>.json 元数据（caption/发送者/日期等）
   disable_classify_by_type: false  # 按媒体类型归档默认开启；设为 true 可恢复旧版扁平目录布局
 
 chat:
@@ -29,7 +30,13 @@ retry:
 # 任务队列配置
 queue:
   max_concurrent_tasks: 1  # 同时运行的历史下载任务数（监控任务不占用此配额，独立运行）
+  auto_retry: 2            # 任务失败后自动重试次数（0 关闭；重试沿用同一任务并从断点续扫）
 
 # 持久化存储配置
 store:
   path: "./tg-down.db"  # SQLite 数据库文件路径
+
+# 任务完成通知（任务完成/最终失败时触发，取消不通知）
+notify:
+  telegram_self: false  # 向自己的 Saved Messages 发送通知消息
+  webhook_url: ""       # 非空时向该地址 POST 任务 JSON

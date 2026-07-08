@@ -15,8 +15,10 @@ import (
 	"sync"
 	"time"
 
+	"tg-down/internal/config"
 	"tg-down/internal/downloader"
 	"tg-down/internal/logger"
+	"tg-down/internal/notify"
 	"tg-down/internal/queue"
 	"tg-down/internal/store"
 	"tg-down/internal/telegram"
@@ -88,15 +90,23 @@ type Server struct {
 // errAuthAborted 标记用户主动中止登录（返回上一步），区别于真实认证失败
 var errAuthAborted = errors.New("登录已被用户中止")
 
-// New 创建 Web 管理端，内部以 maxConcurrentTasks 构建任务队列管理器
-func New(client *telegram.Client, st *store.Store, log *logger.Logger, addr string, maxConcurrentTasks int) *Server {
+// New 创建 Web 管理端：按配置构建任务队列管理器并接线完成通知
+func New(client *telegram.Client, st *store.Store, log *logger.Logger, addr string, cfg *config.Config) *Server {
 	if addr == "" {
 		addr = DefaultAddr
+	}
+	q := queue.NewManager(client, st, log, cfg.Queue.MaxConcurrentTasks, cfg.Queue.AutoRetryCount())
+	var selfSend func(context.Context, string) error
+	if cfg.Notify.TelegramSelf {
+		selfSend = client.SendSelfMessage
+	}
+	if n := notify.New(selfSend, cfg.Notify.WebhookURL, log); n != nil {
+		q.SetOnTerminal(n.TaskFinished)
 	}
 	return &Server{
 		client:       client,
 		store:        st,
-		queue:        queue.NewManager(client, st, log, maxConcurrentTasks),
+		queue:        q,
 		logger:       log,
 		addr:         addr,
 		token:        os.Getenv(webTokenEnv),
@@ -334,6 +344,7 @@ func (s *Server) onLog(level, msg string) {
 func (s *Server) snapshot() stateSnapshot {
 	state, stateErr := s.currentState()
 	return stateSnapshot{
+		Version:          appVersion,
 		State:            state,
 		Error:            stateErr,
 		Phone:            maskPhone(s.client.Phone()),
@@ -369,7 +380,18 @@ func maskPhone(phone string) string {
 
 // --- DTOs ---
 
+// appVersion 由 SetVersion 在启动时注入构建版本，经 /api/state 暴露给前端
+var appVersion = "dev"
+
+// SetVersion 设置对外展示的应用版本（须在 Run 之前调用）
+func SetVersion(v string) {
+	if v != "" {
+		appVersion = v
+	}
+}
+
 type stateSnapshot struct {
+	Version          string                     `json:"version"`
 	State            State                      `json:"state"`
 	Error            string                     `json:"error,omitempty"`
 	Phone            string                     `json:"phone"`

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"tg-down/internal/config"
+	"tg-down/internal/downloader"
 	"tg-down/internal/logger"
 	"tg-down/internal/store"
 	"tg-down/internal/telegram"
@@ -44,7 +45,19 @@ const (
 	MaxModeChoice = 3
 )
 
+// version 由构建时 -ldflags "-X main.version=..." 注入
+var version = "dev"
+
 func main() {
+	telegram.SetAppVersion(version)
+	web.SetVersion(version)
+
+	// 版本信息: tg-down --version
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Printf("tg-down %s\n", version)
+		return
+	}
+
 	// 清除会话: tg-down --clear-session
 	if len(os.Args) > 1 && os.Args[1] == "--clear-session" {
 		clearSessionAndExit()
@@ -140,8 +153,8 @@ func runWeb(cfg *config.Config, log *logger.Logger, addr string) error {
 	ctx, cancel := setupSignalHandling(log)
 	defer cancel()
 
-	if err := web.New(client, st, log, addr, cfg.Queue.MaxConcurrentTasks).Run(ctx); err != nil {
-		return fmt.Errorf("Web 服务运行失败: %w", err)
+	if err := web.New(client, st, log, addr, cfg).Run(ctx); err != nil {
+		return fmt.Errorf("web 服务运行失败: %w", err)
 	}
 	return nil
 }
@@ -209,7 +222,7 @@ func executeMode(
 	case ModeDownloadHistory:
 		return executeDownloadHistory(ctx, client, log, targetChatID)
 	case ModeMonitorNewMessages:
-		return executeMonitorNewMessages(ctx, cancel, client, log, targetChatID)
+		return executeMonitorNewMessages(ctx, cancel, log, targetChatID)
 	case ModeDownloadAndMonitor:
 		return executeDownloadAndMonitor(ctx, client, log, targetChatID)
 	default:
@@ -220,7 +233,7 @@ func executeMode(
 // logHistoryMediaCount 在下载前统计并打印聊天媒体总数（近似值）；
 // 统计失败仅告警不阻断，返回非 nil 仅表示 ctx 已取消
 func logHistoryMediaCount(ctx context.Context, client *telegram.Client, log *logger.Logger, chatID int64) error {
-	total, err := client.CountHistoryMedia(ctx, chatID)
+	total, err := client.CountHistoryMedia(ctx, chatID, nil)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return err
@@ -239,7 +252,8 @@ func executeDownloadHistory(ctx context.Context, client *telegram.Client, log *l
 		return nil
 	}
 	taskID := fmt.Sprintf("cli-history-%d", time.Now().UnixNano())
-	if err := client.DownloadHistoryMedia(ctx, targetChatID, taskID); err != nil {
+	spec := &downloader.HistorySpec{ChatID: targetChatID, TaskID: taskID}
+	if err := client.DownloadHistoryMedia(ctx, spec); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil
 		}
@@ -252,14 +266,13 @@ func executeDownloadHistory(ctx context.Context, client *telegram.Client, log *l
 func executeMonitorNewMessages(
 	ctx context.Context,
 	cancel context.CancelFunc,
-	client *telegram.Client,
 	log *logger.Logger,
 	targetChatID int64,
 ) error {
 	log.Info("开始实时监控新消息...")
 	log.Info("实时监控已启动，目标聊天ID: %d", targetChatID)
 
-	startInteractiveMonitoring(ctx, cancel, client, log, targetChatID)
+	startInteractiveMonitoring(ctx, cancel, log, targetChatID)
 	<-ctx.Done()
 	return nil
 }
@@ -271,7 +284,8 @@ func executeDownloadAndMonitor(ctx context.Context, client *telegram.Client, log
 		return nil
 	}
 	taskID := fmt.Sprintf("cli-history-%d", time.Now().UnixNano())
-	if err := client.DownloadHistoryMedia(ctx, targetChatID, taskID); err != nil {
+	spec := &downloader.HistorySpec{ChatID: targetChatID, TaskID: taskID}
+	if err := client.DownloadHistoryMedia(ctx, spec); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil
 		}
@@ -287,7 +301,6 @@ func executeDownloadAndMonitor(ctx context.Context, client *telegram.Client, log
 func startInteractiveMonitoring(
 	ctx context.Context,
 	cancel context.CancelFunc,
-	client *telegram.Client,
 	log *logger.Logger,
 	targetChatID int64,
 ) {

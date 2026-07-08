@@ -1,0 +1,31 @@
+# Tg-Down 飞牛OS (fnOS) 部署模板
+# 使用：fnOS「Docker」应用 → Compose 项目 → 新建 → 粘贴本文件 → 部署，
+# 然后浏览器打开 http://<NAS地址>:8080?token=<你的令牌> 完成 Telegram 网页登录。
+#
+# 必改项：
+#   1. TG_DOWN_WEB_TOKEN —— 访问令牌（必填，缺失容器将拒绝启动）
+#   2. 卷映射左侧路径 —— 按实际存储空间调整（fnOS 惯例为 /vol1/...，
+#      可在文件管理器中「复制原始路径」获取）
+#   3. API_ID / API_HASH —— 可选：也可留空，在网页端登录时填写
+services:
+  tg-down:
+    image: ghcr.io/heartcoolman/tg-down:latest
+    container_name: tg-down
+    ports:
+      - "8080:8080"
+    environment:
+      TG_DOWN_WEB_TOKEN: "change-me"   # 必填：网页访问令牌
+      API_ID: ""                        # 可选：https://my.telegram.org/apps
+      API_HASH: ""                      # 可选
+      PUID: "1000"                      # 文件属主，跑 `id` 查看你的 NAS 用户
+      PGID: "1000"
+      TZ: "Asia/Shanghai"
+      # MAX_CONCURRENT_DOWNLOADS: "5"   # 同时下载的文件数
+      # AUTO_RETRY: "2"                 # 任务失败自动重试次数
+      # SAVE_METADATA: "false"          # 是否写 <文件>.json 元数据
+      # NOTIFY_TELEGRAM_SELF: "false"   # 任务完成时向 Saved Messages 发通知
+    volumes:
+      - /vol1/1000/tg-down/downloads:/downloads
+      - /vol1/1000/tg-down/sessions:/sessions
+      - /vol1/1000/tg-down/data:/data
+    restart: unless-stopped

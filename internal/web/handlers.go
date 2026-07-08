@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"tg-down/internal/downloader"
 	"tg-down/internal/queue"
 	"tg-down/internal/store"
 	"tg-down/internal/telegram"
@@ -31,6 +32,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/settings/classify", s.handleSettingsClassify)
 	mux.HandleFunc("GET /api/tasks", s.handleTasksList)
 	mux.HandleFunc("POST /api/tasks", s.handleTasksCreate)
+	mux.HandleFunc("POST /api/resolve", s.handleResolve)
 	mux.HandleFunc("POST /api/tasks/{id}/cancel", s.handleTaskCancel)
 	mux.HandleFunc("POST /api/tasks/{id}/retry", s.handleTaskRetry)
 	mux.HandleFunc("GET /api/download/settings", s.handleDownloadSettings)
@@ -41,6 +43,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/media/resume-all", s.handleMediaResumeAll)
 	mux.HandleFunc("GET /api/history", s.handleHistoryList)
 	mux.HandleFunc("GET /api/history/stats", s.handleHistoryStats)
+	mux.HandleFunc("GET /api/schedules", s.handleSchedulesList)
+	mux.HandleFunc("POST /api/schedules", s.handleSchedulesCreate)
+	mux.HandleFunc("DELETE /api/schedules/{id}", s.handleScheduleDelete)
+	mux.HandleFunc("POST /api/schedules/{id}/toggle", s.handleScheduleToggle)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -177,7 +183,9 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	if !s.requireReady(w) {
 		return
 	}
-	for _, t := range s.queue.List() {
+	tasks := s.queue.List()
+	for i := range tasks {
+		t := &tasks[i]
 		if t.Status == string(queue.StatusQueued) || t.Status == string(queue.StatusRunning) {
 			if err := s.queue.Cancel(t.ID); err != nil {
 				s.logger.Warn("登出前取消任务 %s 失败: %v", t.ID, err)
@@ -239,6 +247,12 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Kind   string `json:"kind"`
 		ChatID int64  `json:"chat_id"`
+		// Filters 是任务级过滤条件（仅 history 任务生效；monitor 在 v2.0 忽略过滤器）
+		Filters downloader.HistoryFilters `json:"filters"`
+		// MessageID 非 0 时创建单消息下载任务（来自 /api/resolve 的消息链接解析）
+		MessageID int64 `json:"message_id"`
+		// ChatTitle 可选；公开频道可能不在缓存聊天列表中，由解析结果直接携带标题
+		ChatTitle string `json:"chat_title"`
 	}
 	if !s.decode(w, r, &body) {
 		return
@@ -248,15 +262,43 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "kind 必须为 history 或 monitor")
 		return
 	}
+	if msg := body.Filters.Validate(); msg != "" {
+		s.writeError(w, http.StatusBadRequest, msg)
+		return
+	}
 	if !s.requireReady(w) {
 		return
 	}
-	dto, err := s.queue.Enqueue(kind, body.ChatID, s.chatTitle(body.ChatID))
+	title := body.ChatTitle
+	if title == "" {
+		title = s.chatTitle(body.ChatID)
+	}
+	spec := &downloader.HistorySpec{ChatID: body.ChatID, Filters: body.Filters, MessageID: body.MessageID}
+	dto, err := s.queue.Enqueue(kind, spec, title)
 	if err != nil {
 		s.writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 	s.writeJSON(w, dto)
+}
+
+// handleResolve 解析 t.me 链接 / @用户名为聊天与可选消息 id，供前端确认后创建任务
+func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Input string `json:"input"`
+	}
+	if !s.decode(w, r, &body) {
+		return
+	}
+	if !s.requireReady(w) {
+		return
+	}
+	target, err := s.client.ResolveTarget(r.Context(), body.Input)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.writeJSON(w, target)
 }
 
 func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
@@ -274,6 +316,91 @@ func (s *Server) handleTaskRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, dto)
+}
+
+/* ---- 定时下载计划 ---- */
+
+func (s *Server) handleSchedulesList(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.store.ListSchedules(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if rows == nil {
+		rows = []*store.ScheduleRow{}
+	}
+	s.writeJSON(w, rows)
+}
+
+func (s *Server) handleSchedulesCreate(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ChatID      int64                     `json:"chat_id"`
+		IntervalMin int                       `json:"interval_min"`
+		Filters     downloader.HistoryFilters `json:"filters"`
+		ChatTitle   string                    `json:"chat_title"`
+	}
+	if !s.decode(w, r, &body) {
+		return
+	}
+	if body.ChatID == 0 {
+		s.writeError(w, http.StatusBadRequest, "chat_id 不能为空")
+		return
+	}
+	if body.IntervalMin < queue.MinScheduleIntervalMin {
+		s.writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("间隔不能小于 %d 分钟", queue.MinScheduleIntervalMin))
+		return
+	}
+	if msg := body.Filters.Validate(); msg != "" {
+		s.writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	title := body.ChatTitle
+	if title == "" {
+		title = s.chatTitle(body.ChatID)
+	}
+	filtersJSON := ""
+	if !body.Filters.IsZero() {
+		if data, err := json.Marshal(body.Filters); err == nil {
+			filtersJSON = string(data)
+		}
+	}
+	row := &store.ScheduleRow{
+		ID:          fmt.Sprintf("s%d", time.Now().UnixNano()),
+		ChatID:      body.ChatID,
+		ChatTitle:   title,
+		IntervalMin: body.IntervalMin,
+		Filters:     filtersJSON,
+		Enabled:     true,
+		CreatedAt:   time.Now(),
+	}
+	if err := s.store.CreateSchedule(r.Context(), row); err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, row)
+}
+
+func (s *Server) handleScheduleDelete(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.DeleteSchedule(r.Context(), r.PathValue("id")); err != nil {
+		s.writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	s.writeOK(w)
+}
+
+func (s *Server) handleScheduleToggle(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if !s.decode(w, r, &body) {
+		return
+	}
+	if err := s.store.SetScheduleEnabled(r.Context(), r.PathValue("id"), body.Enabled); err != nil {
+		s.writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	s.writeOK(w)
 }
 
 func (s *Server) handleDownloadSettings(w http.ResponseWriter, _ *http.Request) {

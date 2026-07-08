@@ -469,6 +469,7 @@
         </div>
       </div>
       <button class="logout-btn" onclick="logout(this)">退出登录</button>
+      <div class="meta" id="appVersion" style="text-align:center;margin-top:8px;opacity:.6"></div>
     </div>
   </aside>
 
@@ -497,6 +498,33 @@
         <div class="cmd-select"><select id="cmdChat"></select></div>
         <button class="btn-accent" onclick="enqueueTask('history', cmdChatId(), this)">下载历史媒体</button>
         <button class="btn-tint" onclick="enqueueTask('monitor', cmdChatId(), this)">开启监控</button>
+        <button class="btn-ghost" id="filterToggle" onclick="toggleFilterPanel()">过滤器</button>
+      </div>
+
+      <div class="cmd-bar">
+        <div class="cmd-search" style="flex:1">
+          <input class="bare-input" id="cmdLink" type="text" placeholder="粘贴 t.me 链接或 @用户名（消息链接只下载该条消息）…" />
+        </div>
+        <button class="btn-tint" onclick="resolveAndEnqueue(this)">解析并下载</button>
+      </div>
+
+      <div class="card" id="filterPanel" style="display:none;padding:14px 16px;margin-bottom:14px">
+        <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center">
+          <span class="meta">媒体类型（不勾选 = 全部）:</span>
+          <label><input type="checkbox" class="ft-type" value="photo"> 图片</label>
+          <label><input type="checkbox" class="ft-type" value="video"> 视频</label>
+          <label><input type="checkbox" class="ft-type" value="document"> 文档</label>
+          <label><input type="checkbox" class="ft-type" value="animation"> 动图</label>
+          <label><input type="checkbox" class="ft-type" value="audio"> 音频</label>
+          <label><input type="checkbox" class="ft-type" value="voice"> 语音</label>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-top:10px">
+          <label class="meta">起始日期 <input type="date" id="ftDateFrom"></label>
+          <label class="meta">结束日期 <input type="date" id="ftDateTo"></label>
+          <label class="meta">单文件上限(MB) <input type="number" id="ftMaxSize" min="0" step="1" style="width:80px"></label>
+          <button class="btn-ghost" onclick="clearFilters()">清空</button>
+          <span class="meta">过滤器对新提交的历史下载任务生效</span>
+        </div>
       </div>
 
       <div class="ov-grid">
@@ -557,6 +585,17 @@
       <div class="card task-list" id="mediaList"><div class="empty">暂无排队或下载中的媒体</div></div>
       <div class="queue-sub">批量任务<span id="batchCountText"></span></div>
       <div class="card task-list" id="taskList"><div class="empty">暂无批量任务</div></div>
+
+      <div class="queue-sub">定时下载<span id="schedCountText"></span></div>
+      <div class="card" style="padding:14px 16px;margin-bottom:12px">
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+          <div class="cmd-select"><select id="schedChat"></select></div>
+          <label class="meta">间隔(分钟) <input class="num-input" id="schedInterval" type="number" min="10" step="10" value="1440" style="width:90px"></label>
+          <button class="btn-tint" onclick="createSchedule(this)">新建计划</button>
+          <span class="meta">到期自动增量扫描该聊天（沿用概览页过滤器设置）</span>
+        </div>
+      </div>
+      <div class="card task-list" id="schedList"><div class="empty">暂无定时计划</div></div>
     </section>
 
     <!-- ======== 下载历史 ======== -->
@@ -712,6 +751,7 @@ const NAV_ITEMS = [
 ];
 const HISTORY_TYPES = ["photo", "video", "document", "animation", "audio", "voice"];
 const TASK_KIND_LABEL = { history: "历史下载", monitor: "实时监控" };
+const MEDIA_TYPE_LABEL = { photo: "图片", video: "视频", document: "文档", animation: "动图", audio: "音频", voice: "语音" };
 const TASK_STATUS_LABEL = { queued: "排队中", running: "下载中", completed: "已完成", failed: "失败", canceled: "已取消" };
 const HISTORY_STATUS = {
   downloading: ["下载中", "pill-run"],
@@ -738,8 +778,8 @@ function withToken(path) {
   if (!authToken) return path;
   return path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(authToken);
 }
-async function api(path, body) {
-  const opt = { method: body === undefined ? "GET" : "POST", headers: {} };
+async function api(path, body, method) {
+  const opt = { method: method || (body === undefined ? "GET" : "POST"), headers: {} };
   if (body !== undefined) {
     opt.headers["Content-Type"] = "application/json";
     opt.body = JSON.stringify(body);
@@ -798,6 +838,9 @@ function showPage(key) {
     loadSettings();
   } else if (key === "chats" && !chats.length) {
     loadChats();
+  } else if (key === "tasks") {
+    loadSchedules();
+    populateSchedChatSelect();
   }
 }
 
@@ -828,6 +871,7 @@ function applyState(s) {
 
   if (!ready) return;
   $("connPhone").textContent = s.phone || "-";
+  if (s.version) $("appVersion").textContent = "tg-down " + s.version;
   if (target !== lastTarget) { lastTarget = target; renderChats(); }
   renderPauseAllButtons();
   renderOverview(s);
@@ -1137,9 +1181,139 @@ async function enqueueTask(kind, chatId, b) {
   if (!chatId) return toast("请先选择聊天");
   if (b) b.disabled = true;
   try {
-    await api("/api/tasks", { kind, chat_id: chatId });
+    const body = { kind, chat_id: chatId };
+    if (kind === "history") {
+      const f = collectFilters();
+      if (f) body.filters = f;
+    }
+    await api("/api/tasks", body);
     if (kind === "monitor") { target = chatId; renderMonitor(); renderChats(); }
     toast(kind === "history" ? "已提交历史下载" : "已开始实时监控");
+    loadTasks();
+  } catch (e) { toast(e.message); }
+  finally { if (b) b.disabled = false; }
+}
+
+/* ---- 任务过滤器 ---- */
+function toggleFilterPanel() {
+  const p = $("filterPanel");
+  p.style.display = p.style.display === "none" ? "" : "none";
+}
+function clearFilters() {
+  document.querySelectorAll(".ft-type").forEach(c => { c.checked = false; });
+  $("ftDateFrom").value = ""; $("ftDateTo").value = ""; $("ftMaxSize").value = "";
+}
+// collectFilters 读取面板状态，返回过滤器对象（无过滤时返回 null）
+function collectFilters() {
+  const types = [...document.querySelectorAll(".ft-type:checked")].map(c => c.value);
+  const f = {};
+  if (types.length) f.media_types = types;
+  const from = $("ftDateFrom").value, to = $("ftDateTo").value;
+  if (from) f.date_from = Math.floor(new Date(from + "T00:00:00").getTime() / 1000);
+  if (to) f.date_to = Math.floor(new Date(to + "T23:59:59").getTime() / 1000);
+  const mb = parseFloat($("ftMaxSize").value);
+  if (mb > 0) f.max_file_size = Math.floor(mb * 1024 * 1024);
+  return Object.keys(f).length ? f : null;
+}
+// filterChips 生成任务卡上的过滤/单消息标记文本
+function filterChips(t) {
+  const bits = [];
+  if (t.message_id) bits.push("单条消息");
+  const f = t.filters;
+  if (f) {
+    if (f.media_types && f.media_types.length) bits.push("类型:" + f.media_types.map(x => MEDIA_TYPE_LABEL[x] || x).join("/"));
+    if (f.date_from) bits.push("自 " + new Date(f.date_from * 1000).toLocaleDateString());
+    if (f.date_to) bits.push("至 " + new Date(f.date_to * 1000).toLocaleDateString());
+    if (f.max_file_size) bits.push("≤" + Math.round(f.max_file_size / 1048576) + "MB");
+  }
+  return bits.length ? ` · ${bits.join(" · ")}` : "";
+}
+
+/* ---- 定时下载计划 ---- */
+let schedules = [];
+function populateSchedChatSelect() {
+  const sel = $("schedChat");
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = chats.map(c =>
+    `<option value="${c.id}">${escapeHtml(c.title) || ("ID " + c.id)}</option>`).join("")
+    || `<option value="0">暂无聊天</option>`;
+  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+}
+async function loadSchedules() {
+  try {
+    schedules = await api("/api/schedules") || [];
+    renderSchedules();
+  } catch (e) {}
+}
+function renderSchedules() {
+  $("schedCountText").textContent = schedules.length ? ` · ${schedules.length} 条` : "";
+  const el = $("schedList");
+  if (!schedules.length) { el.innerHTML = `<div class="empty">暂无定时计划</div>`; return; }
+  el.innerHTML = schedules.map(sc => {
+    const last = sc.last_run ? new Date(sc.last_run).toLocaleString() : "从未";
+    const intervalText = sc.interval_min % 1440 === 0 ? `${sc.interval_min / 1440} 天`
+      : sc.interval_min % 60 === 0 ? `${sc.interval_min / 60} 小时` : `${sc.interval_min} 分钟`;
+    return `<div class="task-row">
+      <div class="task-row-top">
+        <div class="task-row-main">
+          <b title="${escapeAttr(sc.chat_title || "")}">${escapeHtml(sc.chat_title) || ("ID " + sc.chat_id)}</b>
+          <small>每 ${intervalText} · 上次触发: ${escapeHtml(last)}${sc.enabled ? "" : " · 已停用"}</small>
+        </div>
+        <div class="task-row-side">
+          <button class="btn-small" onclick="toggleSchedule('${escapeAttr(sc.id)}', ${!sc.enabled}, this)">${sc.enabled ? "停用" : "启用"}</button>
+          <button class="btn-small" onclick="deleteSchedule('${escapeAttr(sc.id)}', this)">删除</button>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+}
+async function createSchedule(b) {
+  const chatId = parseInt($("schedChat").value, 10) || 0;
+  if (!chatId) return toast("请先选择聊天");
+  const interval = parseInt($("schedInterval").value, 10) || 0;
+  if (interval < 10) return toast("间隔不能小于 10 分钟");
+  if (b) b.disabled = true;
+  try {
+    const body = { chat_id: chatId, interval_min: interval };
+    const f = collectFilters();
+    if (f) body.filters = f;
+    await api("/api/schedules", body);
+    toast("已创建定时计划");
+    loadSchedules();
+  } catch (e) { toast(e.message); }
+  finally { if (b) b.disabled = false; }
+}
+async function toggleSchedule(id, enabled, b) {
+  if (b) b.disabled = true;
+  try { await api(`/api/schedules/${encodeURIComponent(id)}/toggle`, { enabled }); loadSchedules(); }
+  catch (e) { toast(e.message); }
+  finally { if (b) b.disabled = false; }
+}
+async function deleteSchedule(id, b) {
+  if (!confirm("确认删除该定时计划？")) return;
+  if (b) b.disabled = true;
+  try { await api(`/api/schedules/${encodeURIComponent(id)}`, undefined, "DELETE"); toast("已删除"); loadSchedules(); }
+  catch (e) { toast(e.message); }
+  finally { if (b) b.disabled = false; }
+}
+
+/* ---- t.me 链接解析 ---- */
+async function resolveAndEnqueue(b) {
+  const input = ($("cmdLink").value || "").trim();
+  if (!input) return toast("请输入 t.me 链接或 @用户名");
+  if (b) b.disabled = true;
+  try {
+    const target = await api("/api/resolve", { input });
+    const scope = target.message_id ? "该条消息" : "整个聊天的历史媒体";
+    if (!confirm(`将下载「${target.chat_title || ("ID " + target.chat_id)}」的${scope}，确认？`)) return;
+    const body = { kind: "history", chat_id: target.chat_id, chat_title: target.chat_title || "" };
+    if (target.message_id) body.message_id = target.message_id;
+    const f = collectFilters();
+    if (f) body.filters = f;
+    await api("/api/tasks", body);
+    $("cmdLink").value = "";
+    toast("已提交下载任务");
     loadTasks();
   } catch (e) { toast(e.message); }
   finally { if (b) b.disabled = false; }
@@ -1251,7 +1425,7 @@ function renderTaskList() {
       <div class="task-row-top">
         <div class="task-row-main">
           <b title="${escapeAttr(t.chat_title || "")}">${escapeHtml(t.chat_title) || ("ID " + t.chat_id)}</b>
-          <small>${escapeHtml(TASK_KIND_LABEL[t.kind] || t.kind)} · ${escapeHtml(TASK_STATUS_LABEL[t.status] || t.status)}${expectedText}${scanText}</small>
+          <small>${escapeHtml(TASK_KIND_LABEL[t.kind] || t.kind)} · ${escapeHtml(TASK_STATUS_LABEL[t.status] || t.status)}${expectedText}${scanText}${escapeHtml(filterChips(t))}</small>
         </div>
         <div class="task-row-side">
           <span class="pct">${progressText}</span>

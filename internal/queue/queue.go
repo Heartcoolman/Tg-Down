@@ -32,7 +32,7 @@ const (
 	StatusCanceled  Status = "canceled"
 )
 
-// history 任务运行阶段常量（仅内存态，不落库：重启后 running 任务一律回收为 failed）
+// history 任务运行阶段常量（仅内存态，不落库；重启后 running 任务从持久化游标恢复续跑）
 const (
 	phaseCounting    = "counting"
 	phaseDownloading = "downloading"
@@ -41,11 +41,12 @@ const (
 // ChatDownloader 是 Manager 依赖的最小接口（而非直接依赖 *telegram.Client），
 // 使本包可在无真实 TDLib 连接的情况下进行单元测试。
 type ChatDownloader interface {
-	CountHistoryMedia(ctx context.Context, chatID int64) (int64, error)
-	DownloadHistoryMedia(ctx context.Context, chatID int64, taskID string) error
+	CountHistoryMedia(ctx context.Context, chatID int64, mediaTypes []string) (int64, error)
+	DownloadHistoryMedia(ctx context.Context, spec *downloader.HistorySpec) error
 	SetMonitorTask(taskID string, chatID int64)
 	SetRecordFunc(fn func(context.Context, downloader.RecordEvent))
-	SetScanProgressFunc(fn func(taskID string, scannedMessages, foundMedia int64))
+	SetScanProgressFunc(fn func(taskID string, scannedMessages, foundMedia, scanCursor int64))
+	SetDuplicateLookupFunc(fn func(ctx context.Context, uniqueID string) (existingPath string, ok bool))
 }
 
 // TaskDTO 是任务状态对外暴露的值拷贝快照，用于 List/Get/onChange，不持有内部指针
@@ -67,4 +68,12 @@ type TaskDTO struct {
 	// ScannedMessages/FoundMedia 是 history 任务扫描历史的实时进度（仅运行中有值，不落库）
 	ScannedMessages int64 `json:"scanned_messages,omitempty"`
 	FoundMedia      int64 `json:"found_media,omitempty"`
+	// ScanCursor 是持久化的历史扫描游标（最后已扫描页的最旧 message_id），重启恢复时续扫起点
+	ScanCursor int64 `json:"scan_cursor,omitempty"`
+	// Attempts 是自动重试已消耗的次数
+	Attempts int `json:"attempts,omitempty"`
+	// Filters 是任务级过滤条件（nil = 不过滤）
+	Filters *downloader.HistoryFilters `json:"filters,omitempty"`
+	// MessageID 非 0 时为单消息下载任务（t.me 消息链接）
+	MessageID int64 `json:"message_id,omitempty"`
 }

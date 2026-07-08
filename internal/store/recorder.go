@@ -39,6 +39,8 @@ func NewRecorder(s *Store) func(context.Context, downloader.RecordEvent) {
 				FileSize:  evt.Media.FileSize,
 				MimeType:  evt.Media.MimeType,
 				Status:    status,
+				UniqueID:  evt.Media.UniqueID,
+				AlbumID:   evt.Media.AlbumID,
 			})
 		case downloader.RecordCompleted:
 			_ = s.UpdateHistoryResult(ctx, evt.Media.ChatID, evt.Media.MessageID, HistoryStatusCompleted, "", evt.FilePath)

@@ -53,6 +53,7 @@ linters:
             - tg-down/internal/retry
             - tg-down/internal/store
             - tg-down/internal/queue
+            - tg-down/internal/notify
     dupl:
       threshold: 100
     goconst:

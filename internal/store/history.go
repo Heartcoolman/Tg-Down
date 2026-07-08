@@ -17,12 +17,13 @@ const (
 
 // UpsertHistoryStart 在下载开始/跳过时写入或刷新一条历史记录，
 // 以 (chat_id, message_id) 作为幂等键，使重复扫描不会产生重复行；
-// 若已有记录处于终态（completed/failed），冲突更新被跳过，避免重复扫描将其回退为 downloading/skipped
+// 若已有记录处于终态（completed/failed），冲突更新被跳过，避免重复扫描将其回退为 downloading/skipped。
+// 例外：因进程重启被清扫为 failed(interrupted) 的行放行更新，使恢复/重扫能重新激活并修复其状态。
 func (s *Store) UpsertHistoryStart(ctx context.Context, rec *HistoryRecord) error {
 	const q = `
 INSERT INTO history (task_id, chat_id, chat_title, message_id, media_type, file_name, file_path,
-                      file_size, mime_type, status, reason, created_at, finished_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL)
+                      file_size, mime_type, status, reason, created_at, finished_at, unique_id, album_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?)
 ON CONFLICT(chat_id, message_id) DO UPDATE SET
   task_id    = excluded.task_id,
   chat_title = excluded.chat_title,
@@ -34,8 +35,11 @@ ON CONFLICT(chat_id, message_id) DO UPDATE SET
   status     = excluded.status,
   reason     = NULL,
   created_at = excluded.created_at,
-  finished_at = NULL
-WHERE history.status NOT IN ('completed', 'failed')`
+  finished_at = NULL,
+  unique_id  = COALESCE(NULLIF(excluded.unique_id, ''), history.unique_id),
+  album_id   = excluded.album_id
+WHERE history.status NOT IN ('completed', 'failed')
+   OR (history.status = 'failed' AND history.reason = '` + HistoryReasonInterrupted + `')`
 
 	createdAt := rec.CreatedAt
 	if createdAt.IsZero() {
@@ -45,7 +49,7 @@ WHERE history.status NOT IN ('completed', 'failed')`
 	_, err := s.execContext(ctx, q,
 		nullString(rec.TaskID), rec.ChatID, nullString(rec.ChatTitle), rec.MessageID,
 		rec.MediaType, rec.FileName, rec.FilePath, rec.FileSize, nullString(rec.MimeType),
-		rec.Status, timeToUnix(createdAt),
+		rec.Status, timeToUnix(createdAt), nullString(rec.UniqueID), rec.AlbumID,
 	)
 	if err != nil {
 		return fmt.Errorf("写入下载历史失败: %w", err)
@@ -76,23 +80,76 @@ WHERE chat_id = ? AND message_id = ?
 	return checkRowsAffected(res, "下载历史", fmt.Sprintf("chat_id=%d,message_id=%d", chatID, messageID))
 }
 
-// SweepInterruptedHistory 将所有仍停留在 "downloading" 的历史行终结为 "failed"，
-// 供进程启动时调用一次：崩溃/被杀/关停会遗留永不终态的 "downloading" 行（其 RecordCompleted/
-// RecordFailed 事件丢失），污染统计与状态筛选。返回被清理的行数。
+// SweepInterruptedHistory 将所有仍停留在 "downloading" 的历史行终结为 "failed"（原因
+// HistoryReasonInterrupted），供进程启动时调用一次：崩溃/被杀/关停会遗留永不终态的
+// "downloading" 行（其 RecordCompleted/RecordFailed 事件丢失），污染统计与状态筛选。
+// 被清扫的行可由 ListInterruptedByTask 定位并在任务恢复时补下。返回被清理的行数。
 func (s *Store) SweepInterruptedHistory(ctx context.Context) (int64, error) {
 	const q = `
 UPDATE history SET
   status = 'failed',
-  reason = '进程重启中断',
+  reason = ?,
   finished_at = ?
 WHERE status = 'downloading'`
 
-	res, err := s.execContext(ctx, q, time.Now().Unix())
+	res, err := s.execContext(ctx, q, HistoryReasonInterrupted, time.Now().Unix())
 	if err != nil {
 		return 0, fmt.Errorf("清理中断的下载历史失败: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	return n, nil
+}
+
+// ListInterruptedByTask 返回指定任务被进程重启清扫的中断行的 message_id 列表，
+// 供任务恢复时逐条补下（这些消息比扫描游标更新，仅靠游标续扫会永久漏掉）
+func (s *Store) ListInterruptedByTask(ctx context.Context, taskID string) ([]int64, error) {
+	const q = `
+SELECT message_id FROM history
+WHERE task_id = ? AND status = 'failed' AND reason = ?
+ORDER BY message_id DESC`
+
+	rows, err := s.db.QueryContext(ctx, q, taskID, HistoryReasonInterrupted)
+	if err != nil {
+		return nil, fmt.Errorf("查询中断的下载历史失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("解析中断的下载历史失败: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历中断的下载历史失败: %w", err)
+	}
+	return ids, nil
+}
+
+// FindCompletedByUniqueID 按 TDLib remote unique_id 查找最近一条已完成的下载记录，
+// 用于内容级去重（同一文件被转发到多个聊天时避免重复下载）；未找到返回 nil, nil
+func (s *Store) FindCompletedByUniqueID(ctx context.Context, uniqueID string) (*HistoryRecord, error) {
+	if uniqueID == "" {
+		return nil, nil
+	}
+	const q = `
+SELECT id, task_id, chat_id, chat_title, message_id, media_type, file_name, file_path,
+       file_size, mime_type, status, reason, created_at, finished_at
+FROM history
+WHERE unique_id = ? AND status = 'completed'
+ORDER BY finished_at DESC LIMIT 1`
+
+	row := s.db.QueryRowContext(ctx, q, uniqueID)
+	rec, err := scanHistoryRow(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("按 unique_id 查询下载历史失败: %w", err)
+	}
+	return rec, nil
 }
 
 // historyFilterClause 根据过滤条件构建 WHERE 子句（不含 "WHERE" 关键字）与对应参数，
