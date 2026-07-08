@@ -469,6 +469,7 @@
         </div>
       </div>
       <button class="logout-btn" onclick="logout(this)">退出登录</button>
+      <div class="meta" id="appVersion" style="text-align:center;margin-top:8px;opacity:.6"></div>
     </div>
   </aside>
 
@@ -870,6 +871,7 @@ function applyState(s) {
 
   if (!ready) return;
   $("connPhone").textContent = s.phone || "-";
+  if (s.version) $("appVersion").textContent = "tg-down " + s.version;
   if (target !== lastTarget) { lastTarget = target; renderChats(); }
   renderPauseAllButtons();
   renderOverview(s);

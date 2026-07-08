@@ -183,7 +183,9 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	if !s.requireReady(w) {
 		return
 	}
-	for _, t := range s.queue.List() {
+	tasks := s.queue.List()
+	for i := range tasks {
+		t := &tasks[i]
 		if t.Status == string(queue.StatusQueued) || t.Status == string(queue.StatusRunning) {
 			if err := s.queue.Cancel(t.ID); err != nil {
 				s.logger.Warn("登出前取消任务 %s 失败: %v", t.ID, err)
@@ -271,7 +273,7 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 	if title == "" {
 		title = s.chatTitle(body.ChatID)
 	}
-	spec := downloader.HistorySpec{ChatID: body.ChatID, Filters: body.Filters, MessageID: body.MessageID}
+	spec := &downloader.HistorySpec{ChatID: body.ChatID, Filters: body.Filters, MessageID: body.MessageID}
 	dto, err := s.queue.Enqueue(kind, spec, title)
 	if err != nil {
 		s.writeError(w, http.StatusConflict, err.Error())

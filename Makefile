@@ -24,10 +24,13 @@ tdlib:
 	@echo "正在构建 TDLib 到 $(TDLIB_PREFIX) ..."
 	@bash scripts/install-tdlib.sh
 
+# 版本号：优先取 git describe，无仓库时为 dev
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+
 # 构建程序（需先 make tdlib 安装 libtdjson）
 build:
-	@echo "正在编译Telegram媒体下载器 (CGo + TDLib)..."
-	@go build -o tg-down ./cmd
+	@echo "正在编译Telegram媒体下载器 (CGo + TDLib, $(VERSION))..."
+	@go build -ldflags "-s -w -X main.version=$(VERSION)" -o tg-down ./cmd
 	@echo "编译完成！"
 
 # 运行程序

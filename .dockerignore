@@ -1,0 +1,15 @@
+.git
+downloads/
+sessions/
+tg-down
+tg-down.db*
+*.db
+*.db-shm
+*.db-wal
+*.tar.gz
+dist/
+config.yaml
+.env
+*.log
+.vscode/
+.idea/

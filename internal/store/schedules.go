@@ -36,6 +36,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 }
 
 // ListSchedules 返回全部定时计划，按创建时间倒序
+//
+//nolint:dupl // 与 ListTasks 结构同形但行类型/扫描器不同，泛型化收益低于可读性损失
 func (s *Store) ListSchedules(ctx context.Context) ([]*ScheduleRow, error) {
 	const q = `
 SELECT id, chat_id, chat_title, interval_min, filters, enabled, last_run, created_at

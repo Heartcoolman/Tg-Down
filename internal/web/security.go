@@ -10,7 +10,7 @@ import (
 
 const (
 	// webTokenEnv 提供访问令牌；监听非本地地址时必需，本地监听可选。
-	webTokenEnv = "TG_DOWN_WEB_TOKEN"
+	webTokenEnv = "TG_DOWN_WEB_TOKEN" // #nosec G101 -- 环境变量名，非硬编码凭据
 	// allowedHostsEnv 是额外放行的 Host 白名单（逗号分隔），用于反向代理等场景。
 	allowedHostsEnv = "TG_DOWN_WEB_ALLOWED_HOSTS"
 	// maxRequestBodyBytes 限制请求体大小，防止内存耗尽 DoS。

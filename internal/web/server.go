@@ -344,6 +344,7 @@ func (s *Server) onLog(level, msg string) {
 func (s *Server) snapshot() stateSnapshot {
 	state, stateErr := s.currentState()
 	return stateSnapshot{
+		Version:          appVersion,
 		State:            state,
 		Error:            stateErr,
 		Phone:            maskPhone(s.client.Phone()),
@@ -379,7 +380,18 @@ func maskPhone(phone string) string {
 
 // --- DTOs ---
 
+// appVersion 由 SetVersion 在启动时注入构建版本，经 /api/state 暴露给前端
+var appVersion = "dev"
+
+// SetVersion 设置对外展示的应用版本（须在 Run 之前调用）
+func SetVersion(v string) {
+	if v != "" {
+		appVersion = v
+	}
+}
+
 type stateSnapshot struct {
+	Version          string                     `json:"version"`
 	State            State                      `json:"state"`
 	Error            string                     `json:"error,omitempty"`
 	Phone            string                     `json:"phone"`

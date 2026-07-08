@@ -36,6 +36,13 @@ const (
 	mediaTypeAudio     = "audio"
 	mediaTypeVoice     = "voice"
 	mediaTypeOther     = "other"
+
+	// 进度状态（MediaProgress.Status）：与 RecordStatus 语义不同，独立成组
+	progressPaused      = "paused"
+	progressDownloading = "downloading"
+
+	// metadataFilePerm 是元数据 sidecar 的文件权限（非敏感内容）
+	metadataFilePerm = 0o644
 )
 
 // MediaInfo 媒体文件信息
@@ -473,7 +480,7 @@ func (d *Downloader) startProgress(media *MediaInfo, filePath string) string {
 	paused := d.allPaused
 	d.controlMu.Unlock()
 	if paused {
-		d.markProgressStatus(key, "paused")
+		d.markProgressStatus(key, progressPaused)
 	}
 	return key
 }
@@ -486,7 +493,7 @@ func (d *Downloader) markProgressStatus(key, status string) {
 		return
 	}
 	p.Status = status
-	p.Paused = status == "paused"
+	p.Paused = status == progressPaused
 	p.UpdatedAt = time.Now()
 }
 
@@ -554,8 +561,8 @@ func (d *Downloader) PauseMedia(ctx context.Context, id string) error {
 	ctrl.cond.Broadcast()
 	ctrl.mu.Unlock()
 
-	wasDownloading := d.progressStatus(id) == "downloading"
-	d.markProgressStatus(id, "paused")
+	wasDownloading := d.progressStatus(id) == progressDownloading
+	d.markProgressStatus(id, progressPaused)
 	if d.pauseFunc != nil && wasDownloading {
 		media := d.mediaByProgressID(id)
 		if media != nil {
@@ -727,55 +734,9 @@ func (d *Downloader) updateStats(downloaded bool, size int64) {
 
 // DownloadMedia 下载媒体文件
 func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error {
-	chatDir, fileName, filePath := d.planMediaPath(media)
-	media.FileName = fileName
-
-	// 先做路径安全校验，再创建目录：文件名来自远端消息，
-	// 必须在任何 MkdirAll 之前确认其位于下载根目录内，避免在校验前于任意可写路径建目录。
-	if !d.isSafePath(chatDir, d.downloadPath) || !d.isSafePath(filePath, d.downloadPath) {
-		d.logger.Error("不安全的文件路径: %s", filePath)
-		d.updateStats(false, 0)
-		err := fmt.Errorf("unsafe file path: %s", filePath)
-		d.record(ctx, RecordEvent{Media: media, Status: RecordStarted, FilePath: filePath})
-		d.record(ctx, RecordEvent{Media: media, Status: RecordFailed, FilePath: filePath, Reason: err.Error()})
+	filePath, done, err := d.prepareMediaTarget(ctx, media)
+	if done || err != nil {
 		return err
-	}
-
-	if err := os.MkdirAll(chatDir, DirectoryPermission); err != nil {
-		d.logger.Error("创建目录失败: %v", err)
-		d.updateStats(false, 0)
-		d.record(ctx, RecordEvent{Media: media, Status: RecordStarted, FilePath: chatDir})
-		d.record(ctx, RecordEvent{Media: media, Status: RecordFailed, FilePath: chatDir, Reason: err.Error()})
-		return err
-	}
-
-	// 检查文件是否已存在
-	if _, err := os.Stat(filePath); err == nil {
-		d.logger.Debug("文件已存在，跳过下载: %s", fileName)
-		d.stats.mu.Lock()
-		d.stats.Skipped++
-		d.stats.mu.Unlock()
-		d.record(ctx, RecordEvent{Media: media, Status: RecordSkipped, FilePath: filePath})
-		return nil
-	}
-
-	// 内容级去重：同一 unique_id 已在别处下载完成且源文件仍在，复制而非重新下载；
-	// 源文件已被删除时照常下载（跳过会在用户清理旧文件后静默丢失内容）
-	if media.UniqueID != "" && d.duplicateLookupFunc != nil {
-		if src, ok := d.duplicateLookupFunc(ctx, media.UniqueID); ok && src != "" && src != filePath {
-			if _, err := os.Stat(src); err == nil {
-				if err := copyFile(src, filePath); err == nil {
-					d.logger.Info("内容重复，已从既有文件复制: %s <- %s", fileName, src)
-					d.stats.mu.Lock()
-					d.stats.Skipped++
-					d.stats.mu.Unlock()
-					d.record(ctx, RecordEvent{Media: media, Status: RecordSkipped, FilePath: filePath,
-						Reason: "duplicate of " + src})
-					return nil
-				}
-				d.logger.Warn("去重复制失败，回退为正常下载: %v", err)
-			}
-		}
 	}
 
 	if d.downloadFunc == nil {
@@ -788,6 +749,93 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 	progressKey := d.startProgress(media, filePath)
 	d.record(ctx, RecordEvent{Media: media, Status: RecordStarted, FilePath: filePath})
 
+	if err := d.downloadWithPauseLoop(ctx, media, filePath, progressKey); err != nil {
+		return err
+	}
+
+	actual := d.downloadedBytes(progressKey)
+	if actual <= 0 {
+		actual = media.FileSize
+	}
+	d.logger.Info("下载完成: %s", media.FileName)
+	d.updateStats(true, actual)
+	d.finishProgress(progressKey, media, "completed")
+	d.record(ctx, RecordEvent{Media: media, Status: RecordCompleted, FilePath: filePath, DownloadedSize: actual})
+	d.writeMetadataSidecar(media, filePath)
+	return nil
+}
+
+// prepareMediaTarget 规划目标路径并执行下载前检查（路径安全/建目录/已存在跳过/内容级去重）。
+// done=true 表示无需下载（已跳过或已复制），err 非空表示前置失败（已记录事件）。
+func (d *Downloader) prepareMediaTarget(ctx context.Context, media *MediaInfo) (filePath string, done bool, err error) {
+	chatDir, fileName, filePath := d.planMediaPath(media)
+	media.FileName = fileName
+
+	// 先做路径安全校验，再创建目录：文件名来自远端消息，
+	// 必须在任何 MkdirAll 之前确认其位于下载根目录内，避免在校验前于任意可写路径建目录。
+	if !d.isSafePath(chatDir, d.downloadPath) || !d.isSafePath(filePath, d.downloadPath) {
+		d.logger.Error("不安全的文件路径: %s", filePath)
+		d.updateStats(false, 0)
+		err := fmt.Errorf("unsafe file path: %s", filePath)
+		d.record(ctx, RecordEvent{Media: media, Status: RecordStarted, FilePath: filePath})
+		d.record(ctx, RecordEvent{Media: media, Status: RecordFailed, FilePath: filePath, Reason: err.Error()})
+		return filePath, false, err
+	}
+
+	if err := os.MkdirAll(chatDir, DirectoryPermission); err != nil {
+		d.logger.Error("创建目录失败: %v", err)
+		d.updateStats(false, 0)
+		d.record(ctx, RecordEvent{Media: media, Status: RecordStarted, FilePath: chatDir})
+		d.record(ctx, RecordEvent{Media: media, Status: RecordFailed, FilePath: chatDir, Reason: err.Error()})
+		return filePath, false, err
+	}
+
+	// 检查文件是否已存在
+	if _, err := os.Stat(filePath); err == nil {
+		d.logger.Debug("文件已存在，跳过下载: %s", fileName)
+		d.recordSkip(ctx, media, filePath, "")
+		return filePath, true, nil
+	}
+
+	// 内容级去重：同一 unique_id 已在别处下载完成且源文件仍在，复制而非重新下载；
+	// 源文件已被删除时照常下载（跳过会在用户清理旧文件后静默丢失内容）
+	if d.copyFromDuplicate(ctx, media, filePath) {
+		return filePath, true, nil
+	}
+	return filePath, false, nil
+}
+
+// recordSkip 统计并记录一次跳过事件
+func (d *Downloader) recordSkip(ctx context.Context, media *MediaInfo, filePath, reason string) {
+	d.stats.mu.Lock()
+	d.stats.Skipped++
+	d.stats.mu.Unlock()
+	d.record(ctx, RecordEvent{Media: media, Status: RecordSkipped, FilePath: filePath, Reason: reason})
+}
+
+// copyFromDuplicate 尝试按 unique_id 从既有文件复制；成功返回 true（已记 skipped）
+func (d *Downloader) copyFromDuplicate(ctx context.Context, media *MediaInfo, filePath string) bool {
+	if media.UniqueID == "" || d.duplicateLookupFunc == nil {
+		return false
+	}
+	src, ok := d.duplicateLookupFunc(ctx, media.UniqueID)
+	if !ok || src == "" || src == filePath {
+		return false
+	}
+	if _, err := os.Stat(src); err != nil {
+		return false // 源文件已删，照常下载
+	}
+	if err := copyFile(src, filePath); err != nil {
+		d.logger.Warn("去重复制失败，回退为正常下载: %v", err)
+		return false
+	}
+	d.logger.Info("内容重复，已从既有文件复制: %s <- %s", media.FileName, src)
+	d.recordSkip(ctx, media, filePath, "duplicate of "+src)
+	return true
+}
+
+// downloadWithPauseLoop 执行带暂停/恢复语义的下载循环，直至成功、失败或取消
+func (d *Downloader) downloadWithPauseLoop(ctx context.Context, media *MediaInfo, filePath, progressKey string) error {
 	for {
 		if err := d.waitUntilResumed(ctx, progressKey); err != nil {
 			d.finishCanceled(ctx, progressKey, media, filePath)
@@ -801,41 +849,30 @@ func (d *Downloader) DownloadMedia(ctx context.Context, media *MediaInfo) error 
 		// 若已暂停则释放槽位回到循环等待恢复，避免暂停被 "downloading" 覆盖后静默下载完成。
 		if d.isMediaPaused(progressKey) {
 			d.limiter.release()
-			d.markProgressStatus(progressKey, "paused")
+			d.markProgressStatus(progressKey, progressPaused)
 			continue
 		}
-		d.markProgressStatus(progressKey, "downloading")
+		d.markProgressStatus(progressKey, progressDownloading)
 		d.beginAttempt(progressKey)
-		d.logger.Info("开始下载: %s (大小: %d bytes)", fileName, media.FileSize)
+		d.logger.Info("开始下载: %s (大小: %d bytes)", media.FileName, media.FileSize)
 		err := d.downloadFunc(ctx, media, filePath)
 		d.limiter.release()
 		if err == nil {
-			break
+			return nil
 		}
 		// 暂停诱发的取消不算失败：用 pauseRequestedSince 判定（而非当前 paused 状态），
 		// 以覆盖“暂停后立即恢复”导致 paused 已被清除、错误却仍是暂停取消的竞态。
 		if d.isMediaPaused(progressKey) || d.pauseRequestedSince(progressKey) {
-			d.logger.Info("已暂停下载: %s", fileName)
-			d.markProgressStatus(progressKey, "paused")
+			d.logger.Info("已暂停下载: %s", media.FileName)
+			d.markProgressStatus(progressKey, progressPaused)
 			continue
 		}
-		d.logger.Error("下载失败 %s: %v", fileName, err)
+		d.logger.Error("下载失败 %s: %v", media.FileName, err)
 		d.updateStats(false, 0)
 		d.finishProgress(progressKey, media, "failed")
 		d.record(ctx, RecordEvent{Media: media, Status: RecordFailed, FilePath: filePath, Reason: err.Error()})
 		return err
 	}
-
-	actual := d.downloadedBytes(progressKey)
-	if actual <= 0 {
-		actual = media.FileSize
-	}
-	d.logger.Info("下载完成: %s", fileName)
-	d.updateStats(true, actual)
-	d.finishProgress(progressKey, media, "completed")
-	d.record(ctx, RecordEvent{Media: media, Status: RecordCompleted, FilePath: filePath, DownloadedSize: actual})
-	d.writeMetadataSidecar(media, filePath)
-	return nil
 }
 
 // writeMetadataSidecar 在开关开启时写 <文件>.json 元数据（best-effort，失败仅告警）
@@ -860,7 +897,7 @@ func (d *Downloader) writeMetadataSidecar(media *MediaInfo, filePath string) {
 		d.logger.Warn("序列化元数据失败: %v", err)
 		return
 	}
-	if err := os.WriteFile(filePath+".json", data, 0o644); err != nil { // #nosec G306 -- 元数据非敏感
+	if err := os.WriteFile(filePath+".json", data, metadataFilePerm); err != nil { // #nosec G306 -- 元数据非敏感
 		d.logger.Warn("写入元数据 sidecar 失败: %v", err)
 	}
 }

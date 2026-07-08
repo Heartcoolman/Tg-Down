@@ -41,6 +41,33 @@ make build && ./tg-down
 - **实时进度**：通过 SSE 推送下载统计、进度条与运行日志；
 - 默认仅监听 `127.0.0.1`，浅色/深色自动适配。
 
+## 🐳 Docker 部署
+
+多架构镜像（amd64/arm64）发布于 GHCR：
+
+```bash
+docker run -d --name tg-down \
+  -p 8080:8080 \
+  -e TG_DOWN_WEB_TOKEN=change-me \
+  -e PUID=1000 -e PGID=1000 -e TZ=Asia/Shanghai \
+  -v $PWD/downloads:/downloads -v $PWD/sessions:/sessions -v $PWD/data:/data \
+  ghcr.io/heartcoolman/tg-down:latest
+```
+
+浏览器打开 `http://<主机>:8080?token=change-me` 完成网页登录即可使用。容器为纯环境变量配置
+（`TG_DOWN_NO_CONFIG_WRITE=1`），凭据可留空由网页端填写；`TG_DOWN_WEB_TOKEN` 为必填
+（绑定非回环地址时强制鉴权，缺失将拒绝启动）。
+
+### 飞牛OS (fnOS) 部署
+
+1. 打开 fnOS「Docker」应用 → Compose → 新建项目；
+2. 粘贴 [`docs/fnos/docker-compose.yml`](docs/fnos/docker-compose.yml) 模板，修改
+   `TG_DOWN_WEB_TOKEN` 与卷映射路径（fnOS 存储路径形如 `/vol1/...`，可在文件管理器
+   「复制原始路径」获取；`PUID/PGID` 用 `id` 命令查看）；
+3. 部署后浏览器访问 `http://<NAS地址>:8080?token=<令牌>`，在网页内完成 Telegram
+   验证码/两步验证登录（无需终端交互）；
+4. 下载文件落在映射的 `downloads` 目录，属主为 `PUID:PGID`，可直接经 SMB/相册应用访问。
+
 ## 功能特性
 
 - 🌐 **Web 管理端**: 内置 Apple 风格本地网页，登录/浏览/下载/监控/实时日志一站式管理
@@ -49,9 +76,15 @@ make build && ./tg-down
 - 🚀 **实时监控**: 自动监控群聊新消息并下载媒体文件
 - 📚 **历史下载**: 批量下载群聊（含频道/超级群组）历史消息中的媒体文件
 - 🗂️ **下载任务队列**: 支持依次提交多个聊天的下载任务排队执行，Web 端任务列表可取消/重试
+- 💪 **断点续跑与自动重试**: 进程重启后任务从扫描游标恢复并补下中断文件；失败任务指数退避自动重试
+- 🎯 **内容级去重**: 同一文件被转发到多个聊天只下载一次（按 TDLib unique_id 命中后本地复制）；已存在的文件自动跳过
+- 🎛️ **任务级过滤器**: 按媒体类型/日期区间/单文件大小过滤历史下载
+- 🔗 **t.me 链接下载**: 粘贴链接或 @用户名 直接下载；消息链接精确到单条消息
+- 🖼️ **相册聚合与元数据**: 相册归入 `album_<id>` 子目录；可选写 `<文件>.json` 元数据 sidecar
+- ⏰ **定时下载**: 按间隔自动增量扫描指定聊天
+- 📣 **完成通知**: 任务完成/失败可通知 Saved Messages 或 webhook
 - 📊 **下载统计**: 实时显示下载进度和统计信息
 - 🕘 **下载历史记录**: 按文件持久化下载历史，Web 端支持按媒体类型/聊天/状态/时间筛选、搜索与分页浏览
-- 🎯 **智能去重**: 自动跳过已下载的文件
 - 📁 **分类存储**: 默认按媒体类型在各聊天目录下分子文件夹归档存储，可通过 `disable_classify_by_type` 关闭并恢复旧版扁平布局
 - 🔐 **持久登录**: 首次登录后保存会话，无需重复认证
 - ⚙️ **灵活配置**: 支持YAML配置文件和环境变量配置
@@ -191,6 +224,14 @@ go build -o tg-down ./cmd && ./tg-down
 | `download.path` | 下载路径 | `./downloads` |
 | `download.max_concurrent` | 同时下载的文件数 | `5` |
 | `download.batch_size` | 每批拉取的历史消息数 | `100` |
+| `download.partition_size` | 历史下载在途媒体上限 | `100` |
+| `download.save_metadata` | 随文件写 `<文件>.json` 元数据 | `false` |
+| `download.disable_classify_by_type` | 关闭按媒体类型归档 | `false` |
+| `queue.max_concurrent_tasks` | 同时运行的历史下载任务数 | `1` |
+| `queue.auto_retry` | 任务失败自动重试次数（0 关闭） | `2` |
+| `notify.telegram_self` | 任务终结时通知 Saved Messages | `false` |
+| `notify.webhook_url` | 任务终结时 POST 的 webhook 地址 | 空 |
+| `store.path` | SQLite 数据库文件路径 | `./tg-down.db` |
 | `session.dir` | TDLib 数据库/会话根目录（实际位于 `<dir>/tdlib`） | `./sessions` |
 | `chat.target_id` | 目标群组ID（可选） | `0` |
 | `log.level` | 日志级别 | `info` |
@@ -390,28 +431,53 @@ tg-down/
 
 ## 📋 更新日志
 
-### v3.0.0 (2026-07-01)
-- 🗂️ **下载任务队列**：新增 `internal/queue`，Web 端可依次提交多个聊天的下载任务排队执行（受 `queue.max_concurrent_tasks` 限制），支持取消/重试，取代原单任务模型
-- 💾 **SQLite 持久化**：新增 `internal/store`（基于纯 Go 的 `modernc.org/sqlite`，无 CGo 依赖），任务与下载历史落库持久化
-- 🕘 **下载历史记录**：按文件持久化下载历史，Web 端支持按媒体类型/聊天/状态/时间筛选、搜索与分页浏览
-- 📁 **归档目录调整（默认开启）**：下载文件默认按媒体类型在聊天目录下分子文件夹存放，可通过 `disable_classify_by_type: true` 恢复旧版扁平布局
-- 🔌 **Web API 变更（破坏性）**：新增 `/api/tasks*`、`/api/history*`，取代原 `/api/download*`、`/api/monitor`
-- ⚠️ **行为变更**：旧版扁平目录下已下载的文件，在新版分类目录下会被判定为未下载并重新下载一次（暂未提供迁移工具）
+> 注：早期文档曾把 TDLib 迁移与任务队列标注为 "v2.0.0/v3.0.0"，但这两个版本号从未成为实际
+> git tag——相关功能实际随 v1.4.0 发布。以下条目已按真实 tag 矫正。
 
-### v2.0.0 (2026-07-01)
-- 🔄 **下载引擎切换为官方 TDLib**：经 `github.com/zelenin/go-tdlib`（CGo 绑定 libtdjson）直连官方引擎，原生获得断点续传、CDN 加速、动态分片与优先级调度
-- 🧹 **移除 gotd 依赖**：删除自研 `session`/`floodwait`/`ratelimit` 中间件（认证由 TDLib 数据库持久化，限流/flood-wait 由 TDLib 内部处理）
-- 🧱 **构建变更（破坏性）**：首次需 `make tdlib` 构建安装 TDLib；`make build` 自动设置 CGo 环境
-- 📦 **发布改为原生构建**：CGo 无法交叉编译，仅提供 linux-amd64 与 darwin-arm64；Windows/交叉目标需本地自建
-- ⚠️ **配置变更**：`download.chunk_size`/`max_workers`/`rate_limit.*` 失效（TDLib 自管），保留仅为向后兼容
-- 🎞️ **媒体类型扩展**：历史下载新增视频/动图/音频/语音
+### v2.0.0 (2026-07)
+- 🔄 **可靠性**：任务断点续跑（重启后从持久化扫描游标恢复、自动补下中断文件、监控任务自动恢复）；
+  内容级去重（同一文件转发到多个聊天只下载一次，按 TDLib remote unique_id 命中后本地复制）；
+  任务失败自动重试（`queue.auto_retry`，默认 2 次，指数退避、断点续扫）
+- 🎯 **任务级过滤器**：按媒体类型/日期区间/单文件大小上限过滤历史下载，Web 端过滤面板
+- 🔗 **t.me 链接下载**：粘贴 `t.me` 链接或 `@用户名` 直接下载；消息链接只下载该条消息
+- 🖼️ **相册聚合**：同一相册的文件归入 `album_<id>` 子目录
+- 📝 **元数据 sidecar**：`download.save_metadata` 开启后随文件写 `<文件>.json`（caption/发送者/日期）
+- ⏰ **定时下载**：按间隔自动增量扫描指定聊天（Web 端管理，最小间隔 10 分钟）
+- 📣 **完成通知**：任务完成/最终失败时通知 Saved Messages（`notify.telegram_self`）或 webhook
+- 🐳 **Docker 多架构镜像**：GHCR 发布 amd64/arm64，支持 PUID/PGID/TZ 与纯环境变量配置，
+  含飞牛OS (fnOS) 部署模板
+- 🛠️ **Linux 发布包修复**：改在 debian:11 构建（glibc ≥ 2.31 可运行，修复 #32），
+  OpenSSL 1.1 随包捆绑，开箱即用
+- 🔢 **版本注入**：`--version`、启动横幅与 Web 端页脚显示构建版本
+- ⚠️ **破坏性变更**：
+  - 移除配置项 `download.chunk_size`/`download.max_workers`/`rate_limit.*` 及对应环境变量（加载时警告）
+  - 移除 CLI 交互命令 `check`（监控为 TDLib 推送式，无需手动轮询）
+  - 移除实验性 Rust helper（`TG_DOWN_RUST_CORE*` 环境变量失效）
+  - go-tdlib 升级至 master（TDLib 1.8.64）：会话数据库自动前向迁移，升级后不支持回退旧版本
+  - SQLite schema 自动迁移（新增列/表），升级后数据库不兼容 v1.x
+  - 旧版下载的相册文件在新的 `album_<id>` 路径下会重新下载一次
+
+### v1.5.0 (2026-07-08)
+- 🚿 **扫描/下载流水线化**：历史扫描持续翻页并即时分发下载，`partition_size` 控制在途上限
+- ⭐ **收藏夹支持**：Saved Messages 出现在聊天列表
+- 📊 进度口径与 SSE 限频修复；Web 管理台 v2 增加登出、中止登录与设置页
+
+### v1.4.0 (2026-07-05)
+- 🔄 **下载引擎切换为官方 TDLib**：经 `github.com/zelenin/go-tdlib`（CGo 绑定 libtdjson）直连官方引擎，
+  原生获得断点续传、CDN 加速、动态分片与优先级调度；移除 gotd 及自研 session/floodwait/ratelimit 中间件
+- 🗂️ **下载任务队列**：新增 `internal/queue`，多任务排队执行、取消/重试
+- 💾 **SQLite 持久化**：新增 `internal/store`（纯 Go `modernc.org/sqlite`），任务与下载历史落库
+- 🕘 **下载历史记录**：Web 端按媒体类型/聊天/状态/时间筛选、搜索与分页
+- 📁 **按类型归档（默认开启）**：可用 `disable_classify_by_type: true` 恢复扁平布局
+- 🌐 **Web 管理端**：内置 Apple 风格本地网页（登录/浏览/下载/监控/实时日志）
+- 🧱 **构建变更**：首次需 `make tdlib` 构建安装 TDLib；发布改为原生构建（linux-amd64/darwin-arm64）
 
 ### v1.3.0 (2025-07-29)
 - 🚀 **完全自动化发布**：实现 git push 后自动打包发布的完整流程
 - 📦 **开箱即用打包**：每个发布包包含所有依赖文件，下载后可直接运行
 - 🤖 **智能版本管理**：根据提交信息自动确定版本号提升类型
 - 📋 **完整发布包**：包含可执行文件、配置文件、启动脚本和说明文档
-- 🎯 **一键启动**：Windows 用户双击 start.bat，Linux/macOS 用户运行 ./start.sh
+- 🎯 **一键启动**：Linux/macOS 用户运行 ./start.sh
 - 📚 **详细说明文档**：每个平台包含专门的配置说明和使用指南
 - ⚡ **自动化工作流**：推送到 main 分支自动触发版本检测和发布流程
 

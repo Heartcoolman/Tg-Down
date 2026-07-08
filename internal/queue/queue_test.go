@@ -96,11 +96,11 @@ func (f *fakeClient) CountHistoryMedia(_ context.Context, chatID int64, _ []stri
 	return f.counts[chatID], nil
 }
 
-func (f *fakeClient) DownloadHistoryMedia(ctx context.Context, spec downloader.HistorySpec) error {
+func (f *fakeClient) DownloadHistoryMedia(ctx context.Context, spec *downloader.HistorySpec) error {
 	taskID := spec.TaskID
 	f.mu.Lock()
 	f.calls[taskID]++
-	f.specs[taskID] = append(f.specs[taskID], spec)
+	f.specs[taskID] = append(f.specs[taskID], *spec)
 	f.mu.Unlock()
 
 	select {
@@ -185,7 +185,7 @@ func TestEnqueueLifecycle_QueuedRunningCompleted(t *testing.T) {
 	fc := newFakeClient()
 	m := NewManager(fc, newTestStore(t), logger.New(logger.LevelError), 1, 0)
 
-	dto, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 1}, "chat-1")
+	dto, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 1}, "chat-1")
 	if err != nil {
 		t.Fatalf("Enqueue() error = %v", err)
 	}
@@ -214,7 +214,7 @@ func TestRunHistoryTask_CountsBeforeDownload(t *testing.T) {
 	t.Cleanup(cancel)
 	go m.Run(ctx)
 
-	dto, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 1}, "chat-1")
+	dto, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 1}, "chat-1")
 	if err != nil {
 		t.Fatalf("Enqueue() error = %v", err)
 	}
@@ -252,7 +252,7 @@ func TestRunHistoryTask_CountFailureFallsBack(t *testing.T) {
 	m, fc := newTestManager(t, 1)
 	fc.setCountErr(1, errors.New("count boom"))
 
-	dto, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 1}, "chat-1")
+	dto, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 1}, "chat-1")
 	if err != nil {
 		t.Fatalf("Enqueue() error = %v", err)
 	}
@@ -268,13 +268,13 @@ func TestRunHistoryTask_CountFailureFallsBack(t *testing.T) {
 func TestCancel_QueuedTask(t *testing.T) {
 	m, fc := newTestManager(t, 1)
 
-	dto1, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 1}, "chat-1")
+	dto1, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 1}, "chat-1")
 	if err != nil {
 		t.Fatalf("Enqueue(task1) error = %v", err)
 	}
 	waitForStatus(t, m, dto1.ID, StatusRunning, testWaitTimeout)
 
-	dto2, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 2}, "chat-2")
+	dto2, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 2}, "chat-2")
 	if err != nil {
 		t.Fatalf("Enqueue(task2) error = %v", err)
 	}
@@ -302,13 +302,13 @@ func TestCancel_QueuedTask(t *testing.T) {
 func TestCancel_QueuedTask_DoneClosedOnce(t *testing.T) {
 	m, fc := newTestManager(t, 1)
 
-	dto1, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 1}, "chat-1")
+	dto1, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 1}, "chat-1")
 	if err != nil {
 		t.Fatalf("Enqueue(task1) error = %v", err)
 	}
 	waitForStatus(t, m, dto1.ID, StatusRunning, testWaitTimeout)
 
-	dto2, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 2}, "chat-2")
+	dto2, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 2}, "chat-2")
 	if err != nil {
 		t.Fatalf("Enqueue(task2) error = %v", err)
 	}
@@ -343,7 +343,7 @@ func TestCancel_QueuedTask_DoneClosedOnce(t *testing.T) {
 func TestCancel_RunningTask(t *testing.T) {
 	m, fc := newTestManager(t, 1)
 
-	dto, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 1}, "chat-1")
+	dto, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 1}, "chat-1")
 	if err != nil {
 		t.Fatalf("Enqueue() error = %v", err)
 	}
@@ -360,7 +360,7 @@ func TestCancel_RunningTask(t *testing.T) {
 func TestRetry_FailedTask(t *testing.T) {
 	m, fc := newTestManager(t, 1)
 
-	dto, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 1}, "chat-1")
+	dto, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 1}, "chat-1")
 	if err != nil {
 		t.Fatalf("Enqueue() error = %v", err)
 	}
@@ -390,7 +390,7 @@ func TestRetry_FailedTask(t *testing.T) {
 	}
 
 	t.Run("disallowed on non-terminal status", func(t *testing.T) {
-		dto2, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 2}, "chat-2")
+		dto2, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 2}, "chat-2")
 		if err != nil {
 			t.Fatalf("Enqueue() error = %v", err)
 		}
@@ -407,13 +407,13 @@ func TestRetry_FailedTask(t *testing.T) {
 func TestMaxConcurrentTasks_Serializes(t *testing.T) {
 	m, fc := newTestManager(t, 1)
 
-	dto1, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 1}, "chat-1")
+	dto1, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 1}, "chat-1")
 	if err != nil {
 		t.Fatalf("Enqueue(task1) error = %v", err)
 	}
 	waitForStatus(t, m, dto1.ID, StatusRunning, testWaitTimeout)
 
-	dto2, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 2}, "chat-2")
+	dto2, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 2}, "chat-2")
 	if err != nil {
 		t.Fatalf("Enqueue(task2) error = %v", err)
 	}
@@ -436,7 +436,7 @@ func TestMaxConcurrentTasks_Serializes(t *testing.T) {
 func TestMonitor_DoesNotBlockHistoryQueue(t *testing.T) {
 	m, fc := newTestManager(t, 1)
 
-	dto1, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 1}, "chat-1")
+	dto1, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 1}, "chat-1")
 	if err != nil {
 		t.Fatalf("Enqueue(history) error = %v", err)
 	}
@@ -446,7 +446,7 @@ func TestMonitor_DoesNotBlockHistoryQueue(t *testing.T) {
 	var monDTO TaskDTO
 	var monErr error
 	go func() {
-		monDTO, monErr = m.Enqueue(KindMonitor, downloader.HistorySpec{ChatID: 999}, "monitor-chat")
+		monDTO, monErr = m.Enqueue(KindMonitor, &downloader.HistorySpec{ChatID: 999}, "monitor-chat")
 		close(done)
 	}()
 
@@ -465,7 +465,7 @@ func TestMonitor_DoesNotBlockHistoryQueue(t *testing.T) {
 		t.Fatalf("client monitor association = (%s,%d), want (%s,999)", mid, mchat, monDTO.ID)
 	}
 
-	stopped, err := m.Enqueue(KindMonitor, downloader.HistorySpec{ChatID: 0}, "")
+	stopped, err := m.Enqueue(KindMonitor, &downloader.HistorySpec{ChatID: 0}, "")
 	if err != nil {
 		t.Fatalf("Enqueue(stop monitor) error = %v", err)
 	}
@@ -485,13 +485,13 @@ func TestMonitor_DoesNotBlockHistoryQueue(t *testing.T) {
 func TestMonitor_SwitchCancelsPrevious(t *testing.T) {
 	m, fc := newTestManager(t, 1)
 
-	first, err := m.Enqueue(KindMonitor, downloader.HistorySpec{ChatID: 111}, "first")
+	first, err := m.Enqueue(KindMonitor, &downloader.HistorySpec{ChatID: 111}, "first")
 	if err != nil {
 		t.Fatalf("Enqueue(first monitor) error = %v", err)
 	}
 	waitForStatus(t, m, first.ID, StatusRunning, testWaitTimeout)
 
-	second, err := m.Enqueue(KindMonitor, downloader.HistorySpec{ChatID: 222}, "second")
+	second, err := m.Enqueue(KindMonitor, &downloader.HistorySpec{ChatID: 222}, "second")
 	if err != nil {
 		t.Fatalf("Enqueue(second monitor) error = %v", err)
 	}
@@ -508,17 +508,17 @@ func TestMonitor_SwitchCancelsPrevious(t *testing.T) {
 func TestEnqueueHistory_DuplicateChatRejected(t *testing.T) {
 	m, fc := newTestManager(t, 1)
 
-	dto1, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 1}, "chat-1")
+	dto1, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 1}, "chat-1")
 	if err != nil {
 		t.Fatalf("Enqueue(task1) error = %v", err)
 	}
 	waitForStatus(t, m, dto1.ID, StatusRunning, testWaitTimeout)
 
-	if _, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 1}, "chat-1"); err == nil {
+	if _, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 1}, "chat-1"); err == nil {
 		t.Fatal("对处于 running 状态的同一 chat_id 重复 Enqueue 应返回错误")
 	}
 
-	dto2, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 2}, "chat-2")
+	dto2, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 2}, "chat-2")
 	if err != nil {
 		t.Fatalf("Enqueue(task2) error = %v", err)
 	}
@@ -527,7 +527,7 @@ func TestEnqueueHistory_DuplicateChatRejected(t *testing.T) {
 		t.Fatalf("task2 should still be queued while task1 occupies the only worker, got %+v ok=%v", got, ok)
 	}
 
-	if _, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 2}, "chat-2"); err == nil {
+	if _, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 2}, "chat-2"); err == nil {
 		t.Fatal("对处于 queued 状态的同一 chat_id 重复 Enqueue 应返回错误")
 	}
 
@@ -547,7 +547,7 @@ func TestEnqueueHistory_DuplicateChatRejected(t *testing.T) {
 	waitForStatus(t, m, dto2.ID, StatusRunning, testWaitTimeout)
 
 	// task1 已终结，chat-1 应允许重新入队
-	dto3, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 1}, "chat-1")
+	dto3, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 1}, "chat-1")
 	if err != nil {
 		t.Fatalf("任务终结后重新 Enqueue(chat-1) error = %v", err)
 	}
@@ -643,7 +643,7 @@ func TestNewManager_ResumesInterruptedTasksFromStore(t *testing.T) {
 func TestHandleRecordEvent_AsyncPersistPreservesOrder(t *testing.T) {
 	m, fc := newTestManager(t, 1)
 
-	dto, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 1}, "chat-1")
+	dto, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 1}, "chat-1")
 	if err != nil {
 		t.Fatalf("Enqueue() error = %v", err)
 	}
@@ -698,7 +698,7 @@ func TestRunHistoryTask_AutoRetry(t *testing.T) {
 	t.Cleanup(cancel)
 	go m.Run(ctx)
 
-	dto, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 1}, "chat-1")
+	dto, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 1}, "chat-1")
 	if err != nil {
 		t.Fatalf("Enqueue() error = %v", err)
 	}
@@ -735,7 +735,7 @@ func TestEnqueue_FiltersFlowThroughSpecAndRetry(t *testing.T) {
 	go m.Run(ctx)
 
 	filters := downloader.HistoryFilters{MediaTypes: []string{"photo"}, DateFrom: 1700000000, MaxFileSize: 1 << 20}
-	dto, err := m.Enqueue(KindHistory, downloader.HistorySpec{ChatID: 1, Filters: filters}, "chat-1")
+	dto, err := m.Enqueue(KindHistory, &downloader.HistorySpec{ChatID: 1, Filters: filters}, "chat-1")
 	if err != nil {
 		t.Fatalf("Enqueue() error = %v", err)
 	}

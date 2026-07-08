@@ -61,8 +61,8 @@ func (f HistoryFilters) Match(mediaType string, date, size int64) bool {
 
 // ValidMediaTypes 是 MediaTypes 的合法取值集合
 var ValidMediaTypes = map[string]bool{
-	"photo": true, "video": true, "document": true,
-	"animation": true, "audio": true, "voice": true,
+	mediaTypePhoto: true, mediaTypeVideo: true, mediaTypeDocument: true,
+	mediaTypeAnimation: true, mediaTypeAudio: true, mediaTypeVoice: true,
 }
 
 // Validate 校验过滤器字段合法性，返回首个问题的描述（合法时为空串）
