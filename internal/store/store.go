@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite" // 注册 database/sql 驱动 "sqlite"
 )
@@ -44,7 +45,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   failed          INTEGER DEFAULT 0,
   skipped         INTEGER DEFAULT 0,
   total_size      INTEGER DEFAULT 0,
-  downloaded_size INTEGER DEFAULT 0
+  downloaded_size INTEGER DEFAULT 0,
+  expected_total  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status     ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC);
@@ -109,7 +111,21 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("初始化 schema 失败: %w", err)
 	}
 
+	if err := migrateTasksTable(context.Background(), db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	return &Store{db: db}, nil
+}
+
+// migrateTasksTable 为既有库补充 expected_total 列；新建库该列已存在，忽略重复列错误
+func migrateTasksTable(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `ALTER TABLE tasks ADD COLUMN expected_total INTEGER NOT NULL DEFAULT 0`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("迁移 tasks 表失败: %w", err)
+	}
+	return nil
 }
 
 func ensureDatabaseDir(path string) error {

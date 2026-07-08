@@ -37,6 +37,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/download/concurrency", s.handleDownloadConcurrency)
 	mux.HandleFunc("POST /api/media/{id}/pause", s.handleMediaPause)
 	mux.HandleFunc("POST /api/media/{id}/resume", s.handleMediaResume)
+	mux.HandleFunc("POST /api/media/pause-all", s.handleMediaPauseAll)
+	mux.HandleFunc("POST /api/media/resume-all", s.handleMediaResumeAll)
 	mux.HandleFunc("GET /api/history", s.handleHistoryList)
 	mux.HandleFunc("GET /api/history/stats", s.handleHistoryStats)
 }
@@ -315,6 +317,18 @@ func (s *Server) handleMediaResume(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusConflict, err.Error())
 		return
 	}
+	s.writeOK(w)
+}
+
+func (s *Server) handleMediaPauseAll(w http.ResponseWriter, r *http.Request) {
+	s.client.PauseAllMedia(r.Context())
+	s.logger.Info("已暂停全部媒体下载")
+	s.writeOK(w)
+}
+
+func (s *Server) handleMediaResumeAll(w http.ResponseWriter, _ *http.Request) {
+	s.client.ResumeAllMedia()
+	s.logger.Info("已继续全部媒体下载")
 	s.writeOK(w)
 }
 

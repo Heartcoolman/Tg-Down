@@ -482,8 +482,9 @@
           <p id="ovSubtitle">Telegram 已连接</p>
         </div>
         <div class="ov-stats">
-          <div class="ov-stat"><b id="ovDownloaded">0<span class="sub"> / 0</span></b><span>已下载 / 总计</span></div>
+          <div class="ov-stat"><b id="ovDownloaded">0<span class="sub"> / 0</span></b><span>已完成 / 总计</span></div>
           <div class="ov-stat"><b id="ovSize">0 MB</b><span>已下载大小</span></div>
+          <div class="ov-stat"><b id="ovSpeed">0 KB/s</b><span>下载速度</span></div>
           <div class="ov-stat"><b id="ovFailed" style="color:var(--bad-text)">0</b><span>失败</span></div>
         </div>
       </div>
@@ -510,6 +511,7 @@
           <div class="ov-card-head" style="margin-bottom:14px">
             <h3>正在下载</h3>
             <span class="meta" id="ovConc">并发 0 / 0</span>
+            <button class="btn-ghost" id="ovPauseAll" onclick="togglePauseAll(this)">全部暂停</button>
           </div>
           <div class="media-list" id="ovMedia"><div class="empty">暂无正在下载的媒体</div></div>
         </div>
@@ -546,6 +548,7 @@
           <p id="taskCountText">暂无排队或下载中的媒体。</p>
         </div>
         <div class="conc-row">
+          <button class="btn-small" id="pauseAllBtn" style="height:38px;border-radius:10px;padding:0 16px;font-size:13px" onclick="togglePauseAll(this)">全部暂停</button>
           <span id="concText">媒体并发 0 / 0</span>
           <input class="num-input" id="concInput" type="number" min="1" step="1" inputmode="numeric" />
           <button class="btn-small" style="height:38px;border-radius:10px;padding:0 16px;font-size:13px" onclick="saveConcurrency(this)">应用</button>
@@ -697,6 +700,7 @@ let historyTotal = 0;
 let histSearchTimer = null;
 let lastTarget = 0;
 let lastMediaBadge = -1;
+let allPaused = false;
 
 const NAV_ITEMS = [
   { key: "overview", label: "概览" },
@@ -756,6 +760,11 @@ function fmtSize(b) {
   if (mb >= 1024) return (mb / 1024).toFixed(2) + " GB";
   return mb.toFixed(1) + " MB";
 }
+function fmtSpeed(bps) {
+  if (!bps || bps < 1024) return "0 KB/s";
+  const kb = bps / 1024;
+  return kb >= 1024 ? (kb / 1024).toFixed(1) + " MB/s" : kb.toFixed(0) + " KB/s";
+}
 function fmtDate(sec) {
   if (!sec) return "";
   const d = new Date(sec * 1000);
@@ -802,6 +811,7 @@ function applyState(s) {
   activeMedia = Array.isArray(s.media) ? s.media : [];
   mediaConcurrency = s.media_concurrency || mediaConcurrency;
   target = s.target_chat || 0;
+  allPaused = !!s.all_paused;
 
   const ready = st === "ready";
   $("loginView").classList.toggle("hidden", ready);
@@ -819,6 +829,7 @@ function applyState(s) {
   if (!ready) return;
   $("connPhone").textContent = s.phone || "-";
   if (target !== lastTarget) { lastTarget = target; renderChats(); }
+  renderPauseAllButtons();
   renderOverview(s);
   renderMediaQueue();
   if (activeMedia.length !== lastMediaBadge) { lastMediaBadge = activeMedia.length; renderNav(); }
@@ -916,14 +927,18 @@ async function logout(b) {
 function taskProgress(t) {
   const stats = t.stats || {};
   const done = (stats.downloaded || 0) + (stats.skipped || 0);
-  const total = stats.total || 0;
+  const scanned = stats.total || 0;
+  // 运行中优先用预扫描总数做分母；取 max 防止近似值小于实际扫描数时进度倒退/超 100%
+  const expected = t.status === "running" ? (t.expected_total || 0) : 0;
+  const total = Math.max(scanned, expected);
   const pct = total ? Math.min(100, Math.round(done / total * 100)) : 0;
-  return { done, total, pct };
+  return { done, total, pct, approx: expected > 0 && expected >= scanned };
 }
 function taskAppearance(t, pct, done) {
   const kind = TASK_KIND_LABEL[t.kind] || t.kind;
   switch (t.status) {
     case "running":
+      if (t.phase === "counting") return { short: `${kind} · 统计中`, metaColor: "var(--text2)", bar: "var(--accent)" };
       return { short: t.kind === "monitor" ? `${kind} · 运行中` : `${kind} · ${pct}%`, metaColor: "var(--text2)", bar: "var(--accent)" };
     case "queued":
       return { short: "排队中", metaColor: "var(--text3)", bar: "var(--accent)" };
@@ -940,8 +955,12 @@ function renderOverview(s) {
   const downloading = activeMedia.filter(m => !m.paused && m.status !== "paused").length;
   $("ovSubtitle").textContent = `Telegram 已连接 · ${activeTasks} 条任务进行中 · ${downloading} 个媒体正在下载`;
   const st = s.stats || {};
-  $("ovDownloaded").innerHTML = `${st.downloaded || 0}<span class="sub"> / ${st.total || 0}</span>`;
+  // 已完成 = 新下载 + 跳过（文件已存在），与任务卡进度口径一致；明细放悬停提示
+  const ovDone = (st.downloaded || 0) + (st.skipped || 0);
+  $("ovDownloaded").innerHTML = `${ovDone}<span class="sub"> / ${st.total || 0}</span>`;
+  $("ovDownloaded").title = `新下载 ${st.downloaded || 0} · 跳过 ${st.skipped || 0}`;
   $("ovSize").textContent = fmtSize(st.downloaded_size);
+  $("ovSpeed").textContent = fmtSpeed(s.speed_bps);
   $("ovFailed").textContent = st.failed || 0;
   $("ovConc").textContent = `并发 ${mediaConcurrency.active || 0} / ${mediaConcurrency.max_concurrent || 0}`;
   renderOverviewTasks();
@@ -996,6 +1015,22 @@ function renderMonitor() {
   } else {
     banner.classList.add("hidden");
   }
+}
+function renderPauseAllButtons() {
+  const label = allPaused ? "全部继续" : "全部暂停";
+  const a = $("ovPauseAll"), b = $("pauseAllBtn");
+  if (a) a.textContent = label;
+  if (b) b.textContent = label;
+}
+async function togglePauseAll(b) {
+  if (b) b.disabled = true;
+  try {
+    await api(allPaused ? "/api/media/resume-all" : "/api/media/pause-all", {});
+    allPaused = !allPaused;
+    renderPauseAllButtons();
+    toast(allPaused ? "已暂停全部下载" : "已继续全部下载");
+  } catch (e) { toast(e.message); }
+  finally { if (b) b.disabled = false; }
 }
 async function pauseMedia(id) {
   try { await api(`/api/media/${encodeURIComponent(id)}/pause`, {}); toast("已暂停该媒体"); }
@@ -1134,14 +1169,22 @@ function mediaQueueStatus(m) {
   if (m.paused || m.status === "paused") return "paused";
   return m.status === "downloading" ? "downloading" : "queued";
 }
+// scanningHint 在媒体队列为空但存在扫描中的 history 任务时给出提示，避免被误认为卡死
+function scanningHint() {
+  const t = tasks.find(t => t.status === "running" && t.kind === "history");
+  if (!t) return "";
+  return t.scanned_messages
+    ? `正在扫描历史消息…（已扫描 ${t.scanned_messages} 条，发现 ${t.found_media || 0} 个媒体）`
+    : "正在扫描历史消息…";
+}
 function renderMediaQueue() {
   const dl = activeMedia.filter(m => mediaQueueStatus(m) === "downloading").length;
   const ps = activeMedia.filter(m => mediaQueueStatus(m) === "paused").length;
   const qd = activeMedia.length - dl - ps;
   $("taskCountText").textContent = activeMedia.length
-    ? `${dl} 个下载中 · ${qd} 个排队 · ${ps} 个已暂停。` : "暂无排队或下载中的媒体。";
+    ? `${dl} 个下载中 · ${qd} 个排队 · ${ps} 个已暂停。` : (scanningHint() || "暂无排队或下载中的媒体。");
   const el = $("mediaList");
-  if (!activeMedia.length) { el.innerHTML = `<div class="empty">暂无排队或下载中的媒体</div>`; return; }
+  if (!activeMedia.length) { el.innerHTML = `<div class="empty">${escapeHtml(scanningHint() || "暂无排队或下载中的媒体")}</div>`; return; }
   const rows = activeMedia.slice(0, MEDIA_QUEUE_LIMIT).map(m => {
     const st = mediaQueueStatus(m);
     const pct = Math.max(0, Math.min(100, m.percent || 0));
@@ -1188,11 +1231,12 @@ function renderTaskList() {
   const el = $("taskList");
   if (!list.length) { el.innerHTML = `<div class="empty">暂无批量任务</div>`; return; }
   el.innerHTML = list.map(t => {
-    const { done, total, pct } = taskProgress(t);
+    const { done, total, pct, approx } = taskProgress(t);
     const a = taskAppearance(t, pct, done);
     const width = t.status === "completed" ? 100 : pct;
     const progressText = t.status === "queued" ? "排队中"
-      : total ? `${done}/${total} · ${pct}%` : `${done} 项`;
+      : t.status === "running" && t.phase === "counting" ? "统计媒体总数中…"
+      : total ? `${done}/${approx ? "约" + total : total} · ${pct}%` : `${done} 项`;
     let action = "";
     if (t.status === "queued" || t.status === "running") {
       action = `<button class="btn-small" onclick="cancelTask('${escapeAttr(t.id)}', this)">取消</button>`;
@@ -1200,11 +1244,14 @@ function renderTaskList() {
       action = `<button class="btn-small" onclick="retryTask('${escapeAttr(t.id)}', this)">重试</button>`;
     }
     const err = t.status === "failed" && t.error ? `<div class="task-err">${escapeHtml(t.error)}</div>` : "";
+    const expectedText = t.expected_total ? ` · 共约 ${t.expected_total} 个媒体` : "";
+    const scanText = t.status === "running" && t.scanned_messages
+      ? ` · 已扫描 ${t.scanned_messages} 条消息` : "";
     return `<div class="task-row">
       <div class="task-row-top">
         <div class="task-row-main">
           <b title="${escapeAttr(t.chat_title || "")}">${escapeHtml(t.chat_title) || ("ID " + t.chat_id)}</b>
-          <small>${escapeHtml(TASK_KIND_LABEL[t.kind] || t.kind)} · ${escapeHtml(TASK_STATUS_LABEL[t.status] || t.status)}</small>
+          <small>${escapeHtml(TASK_KIND_LABEL[t.kind] || t.kind)} · ${escapeHtml(TASK_STATUS_LABEL[t.status] || t.status)}${expectedText}${scanText}</small>
         </div>
         <div class="task-row-side">
           <span class="pct">${progressText}</span>

@@ -60,6 +60,9 @@ const (
 	emptyHistorySleep = 1 * time.Second
 	// maxEmptyHistorySleep caps the progressive empty-page backoff.
 	maxEmptyHistorySleep = 5 * time.Second
+	// scanLogInterval spaces out history-scan progress log lines so long
+	// media-sparse stretches still show visible activity without log spam.
+	scanLogInterval = 15 * time.Second
 
 	mediaTypePhoto     = "photo"
 	mediaTypeDocument  = "document"
@@ -115,6 +118,8 @@ type Client struct {
 
 	trackMu   sync.Mutex
 	fileTrack map[int32]*fileProgress // TDLib file id -> 进度信息（用于日志）
+
+	scanProgressFunc func(taskID string, scannedMessages, foundMedia int64) // 历史扫描进度回调（启动时注册，无并发写）
 }
 
 // fileProgress 跟踪单个文件的下载进度（仅用于日志输出）
@@ -435,6 +440,18 @@ func (c *Client) ResumeMedia(id string) error {
 	return c.downloader.ResumeMedia(id)
 }
 
+// PauseAllMedia 暂停全部媒体下载，暂停期间新入队的媒体以暂停态开始。
+func (c *Client) PauseAllMedia(ctx context.Context) { c.downloader.PauseAll(ctx) }
+
+// ResumeAllMedia 解除全局暂停并继续全部已暂停的媒体。
+func (c *Client) ResumeAllMedia() { c.downloader.ResumeAll() }
+
+// AllMediaPaused 返回全局暂停闸状态。
+func (c *Client) AllMediaPaused() bool { return c.downloader.AllPaused() }
+
+// DownloadSpeed 返回当前聚合下载速度（字节/秒）。
+func (c *Client) DownloadSpeed() int64 { return c.downloader.SpeedBps() }
+
 // DownloadConcurrency 返回当前媒体文件并发下载数量。
 func (c *Client) DownloadConcurrency() int { return c.downloader.MaxConcurrent() }
 
@@ -466,6 +483,11 @@ func (c *Client) SetDownloadConcurrency(n int) error {
 	c.config.Download.MaxConcurrent = n
 	c.credMu.Unlock()
 	return c.SaveConfig()
+}
+
+// SetScanProgressFunc 设置历史扫描进度回调；须在 Connect/任务运行前注册
+func (c *Client) SetScanProgressFunc(fn func(taskID string, scannedMessages, foundMedia int64)) {
+	c.scanProgressFunc = fn
 }
 
 // SetRecordFunc 设置下载记录回调，用于持久化下载历史
@@ -567,7 +589,7 @@ func (c *Client) Logout(ctx context.Context) error {
 
 // --- 聊天枚举 ---
 
-// GetChats 获取聊天列表（主文件夹 + 归档）
+// GetChats 获取聊天列表（收藏夹置顶 + 主文件夹 + 归档）
 func (c *Client) GetChats(ctx context.Context) ([]ChatInfo, error) {
 	td := c.client()
 	if td == nil {
@@ -592,7 +614,10 @@ func (c *Client) GetChats(ctx context.Context) ([]ChatInfo, error) {
 		}
 	}
 
-	result := make([]ChatInfo, 0, len(order))
+	result := make([]ChatInfo, 0, len(order)+1)
+	if saved := c.savedMessagesChat(ctx, td); saved != nil {
+		result = append(result, *saved)
+	}
 	for _, id := range order {
 		chat, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Chat, error) {
 			return td.GetChat(cc, &tdclient.GetChatRequest{ChatId: id})
@@ -605,6 +630,26 @@ func (c *Client) GetChats(ctx context.Context) ([]ChatInfo, error) {
 		}
 	}
 	return result, nil
+}
+
+// savedMessagesChat 返回收藏夹（Saved Messages，即与自己的私聊）条目；
+// chatInfoOf 会过滤所有私聊，故此处显式构建并置顶，即使收藏夹为空或不在聊天列表也可选。失败返回 nil 不阻塞列表
+func (c *Client) savedMessagesChat(ctx context.Context, td *tdclient.Client) *ChatInfo {
+	me, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.User, error) {
+		return td.GetMe(cc)
+	})
+	if err != nil {
+		c.logger.Warn("获取自身账号失败，收藏夹暂不可用: %v", err)
+		return nil
+	}
+	chat, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Chat, error) {
+		return td.CreatePrivateChat(cc, &tdclient.CreatePrivateChatRequest{UserId: me.Id})
+	})
+	if err != nil {
+		c.logger.Warn("打开收藏夹失败: %v", err)
+		return nil
+	}
+	return &ChatInfo{ID: chat.Id, Title: "收藏夹（Saved Messages）", Type: "收藏夹"}
 }
 
 // loadAllChats 反复调用 LoadChats 把指定列表全部载入本地缓存，直到 404（无更多）
@@ -862,6 +907,53 @@ func (c *Client) unregisterProgress(fileID int32) {
 }
 
 // DownloadHistoryMedia 下载聊天历史中的全部媒体
+// historyCountFilters 与 extractMediaInfo 支持的媒体类型一一对应
+var historyCountFilters = []tdclient.SearchMessagesFilter{
+	&tdclient.SearchMessagesFilterPhoto{},
+	&tdclient.SearchMessagesFilterVideo{},
+	&tdclient.SearchMessagesFilterDocument{},
+	&tdclient.SearchMessagesFilterAudio{},
+	&tdclient.SearchMessagesFilterVoiceNote{},
+	&tdclient.SearchMessagesFilterAnimation{},
+}
+
+// CountHistoryMedia 统计聊天历史中可下载媒体的总数（服务端近似值）。
+// 单个过滤器失败仅跳过；全部失败返回错误，调用方回退为未知总数。
+func (c *Client) CountHistoryMedia(ctx context.Context, chatID int64) (int64, error) {
+	td := c.client()
+	if td == nil {
+		return 0, errors.New("TDLib 未连接")
+	}
+	var total int64
+	succeeded := 0
+	for _, filter := range historyCountFilters {
+		f := filter
+		cnt, err := tdCall(ctx, metadataTimeout, func(cc context.Context) (*tdclient.Count, error) {
+			return td.GetChatMessageCount(cc, &tdclient.GetChatMessageCountRequest{
+				ChatId:      chatID,
+				Filter:      f,
+				ReturnLocal: false,
+			})
+		})
+		if err != nil {
+			if ctx.Err() != nil {
+				return 0, ctx.Err()
+			}
+			c.logger.Warn("统计媒体数量失败 (%s): %v", f.SearchMessagesFilterConstructor(), err)
+			continue
+		}
+		if cnt.Count < 0 { // -1 = 未知
+			continue
+		}
+		total += int64(cnt.Count)
+		succeeded++
+	}
+	if succeeded == 0 {
+		return 0, fmt.Errorf("无法统计聊天 %d 的媒体总数", chatID)
+	}
+	return total, nil
+}
+
 func (c *Client) DownloadHistoryMedia(ctx context.Context, chatID int64, taskID string) error {
 	td := c.client()
 	if td == nil {
@@ -892,46 +984,97 @@ func (c *Client) DownloadHistoryMedia(ctx context.Context, chatID int64, taskID 
 	}
 	limit := int32(batchSize) // 已上界钳制到 DefaultMessageLimit(100)，不会溢出
 
-	var fromMsgID int64
-	totalMedia := 0
+	// 扫描与下载流水线：扫描 goroutine 持续翻页发现媒体并立即分发下载，
+	// sem 限制扫描最多领先下载 partitionSize 个在途媒体（内存与队列长度上界）
+	partitionSize := c.config.Download.PartitionSize
+	if partitionSize <= 0 {
+		partitionSize = config.DefaultPartitionSize
+	}
+
+	var (
+		wg              sync.WaitGroup
+		sem             = make(chan struct{}, partitionSize)
+		fromMsgID       int64
+		scannedMessages int64
+		foundMedia      int64
+	)
 	emptyStreak := 0
-	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
+	lastScanLog := time.Now()
 
-		pageMsgs, err := fetchHistoryPage(ctx, td, chatID, fromMsgID, limit)
-		if err != nil {
-			return err
-		}
+	scanErr := func() error {
+		for {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 
-		if len(pageMsgs) == 0 {
-			emptyStreak++
-			stop, err := awaitNextHistoryPage(ctx, emptyStreak)
+			pageMsgs, err := fetchHistoryPage(ctx, td, chatID, fromMsgID, limit)
 			if err != nil {
 				return err
 			}
-			if stop {
-				break
+
+			if len(pageMsgs) == 0 {
+				emptyStreak++
+				stop, err := awaitNextHistoryPage(ctx, emptyStreak)
+				if err != nil {
+					return err
+				}
+				if stop {
+					return nil
+				}
+				continue
 			}
-			continue
-		}
-		emptyStreak = 0
+			emptyStreak = 0
 
-		media, lastMsgID := c.extractBatchMedia(pageMsgs, taskID)
-		fromMsgID = lastMsgID // 推进到本页最旧消息
+			media, lastMsgID := c.extractBatchMedia(pageMsgs, taskID)
+			fromMsgID = lastMsgID // 推进到本页最旧消息
+			scannedMessages += int64(len(pageMsgs))
+			foundMedia += int64(len(media))
+			c.reportScanProgress(taskID, scannedMessages, foundMedia)
 
-		if len(media) > 0 {
-			wg := c.downloader.DownloadBatch(ctx, media)
-			wg.Wait()
-			totalMedia += len(media)
-			c.logger.Info("已处理 %d 个媒体文件", totalMedia)
+			c.downloader.PlanBatch(media)
+			for _, m := range media {
+				select {
+				case sem <- struct{}{}:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				wg.Add(1)
+				go func(mi *downloader.MediaInfo) {
+					defer wg.Done()
+					defer func() { <-sem }()
+					if err := c.downloader.DownloadMedia(ctx, mi); err != nil {
+						c.logger.Error("下载媒体文件失败: %v", err)
+					}
+				}(m)
+			}
+
+			if time.Since(lastScanLog) >= scanLogInterval {
+				c.logger.Info("扫描进度: 已扫描 %d 条消息，发现 %d 个媒体", scannedMessages, foundMedia)
+				lastScanLog = time.Now()
+			}
 		}
+	}()
+
+	if scanErr == nil {
+		c.logger.Info("历史扫描完成: 共扫描 %d 条消息，发现 %d 个媒体", scannedMessages, foundMedia)
+	}
+	// 扫描出错或取消时也等在途下载全部退出，避免任务进入终态后仍有下载在更新统计
+	wg.Wait()
+	if scanErr != nil {
+		return scanErr
 	}
 
-	c.logger.Info("历史媒体文件下载完成，总计处理 %d 个文件", totalMedia)
+	c.logger.Info("历史媒体文件下载完成，总计处理 %d 个文件", foundMedia)
 	c.downloader.PrintStats()
 	return nil
+}
+
+// reportScanProgress 上报历史扫描进度；未注册回调（CLI 模式）或无任务 ID 时静默
+func (c *Client) reportScanProgress(taskID string, scannedMessages, foundMedia int64) {
+	if c.scanProgressFunc == nil || taskID == "" {
+		return
+	}
+	c.scanProgressFunc(taskID, scannedMessages, foundMedia)
 }
 
 // fetchHistoryPage 拉取一页历史消息，并剔除 Offset:0 时 TDLib 附带返回的

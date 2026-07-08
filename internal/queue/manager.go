@@ -62,8 +62,23 @@ func NewManager(client ChatDownloader, st *store.Store, log *logger.Logger, maxC
 		tasks:              make(map[string]*task),
 	}
 	client.SetRecordFunc(m.handleRecordEvent)
+	client.SetScanProgressFunc(m.handleScanProgress)
 	m.loadTasks(context.Background())
 	return m
+}
+
+// handleScanProgress 是 client 的历史扫描进度回调：更新任务内存态并限频推送任务变更事件，
+// 使前端在扫描阶段（媒体队列可能为空）也能看到任务仍在推进
+func (m *Manager) handleScanProgress(taskID string, scannedMessages, foundMedia int64) {
+	m.mu.Lock()
+	t := m.tasks[taskID]
+	m.mu.Unlock()
+	if t == nil {
+		return
+	}
+	if t.applyScanProgress(scannedMessages, foundMedia) {
+		m.notify(t)
+	}
 }
 
 // loadTasks 从 store 恢复任务历史列表，供 NewManager 在接受任何新任务前调用一次：
@@ -242,10 +257,34 @@ func (m *Manager) runHistoryTask(ctx context.Context, t *task) {
 	m.persist(t)
 	m.notify(t)
 
+	// 计数阶段：下载开始前先统计媒体总数并落库+推送，前端立即可见"共约 N 个"
+	t.mu.Lock()
+	t.phase = phaseCounting
+	t.mu.Unlock()
+	m.notify(t)
+	if total, cntErr := m.client.CountHistoryMedia(taskCtx, t.chatID); cntErr != nil {
+		if taskCtx.Err() == nil {
+			m.logger.Warn("统计任务 %s 媒体总数失败，回退为未知总数: %v", t.id, cntErr)
+		}
+	} else {
+		m.logger.Info("聊天 %d 共约 %d 个媒体文件", t.chatID, total)
+		t.mu.Lock()
+		t.expectedTotal = total
+		t.mu.Unlock()
+		m.persist(t)
+	}
+	t.mu.Lock()
+	t.phase = phaseDownloading
+	t.mu.Unlock()
+	m.notify(t)
+
 	err := m.client.DownloadHistoryMedia(taskCtx, t.chatID, t.id)
 
 	t.mu.Lock()
 	t.cancel = nil
+	t.phase = ""
+	t.scannedMessages = 0
+	t.foundMedia = 0
 	finishedAt := time.Now()
 	t.finishedAt = &finishedAt
 	switch {
@@ -476,13 +515,14 @@ func (m *Manager) Retry(id string) (TaskDTO, error) {
 func (m *Manager) createTaskRow(t *task) error {
 	dto := t.ToDTO()
 	row := &store.TaskRow{
-		ID:        dto.ID,
-		Kind:      dto.Kind,
-		ChatID:    dto.ChatID,
-		ChatTitle: dto.ChatTitle,
-		Status:    dto.Status,
-		CreatedAt: dto.CreatedAt,
-		StartedAt: dto.StartedAt,
+		ID:            dto.ID,
+		Kind:          dto.Kind,
+		ChatID:        dto.ChatID,
+		ChatTitle:     dto.ChatTitle,
+		Status:        dto.Status,
+		CreatedAt:     dto.CreatedAt,
+		StartedAt:     dto.StartedAt,
+		ExpectedTotal: dto.ExpectedTotal,
 	}
 	if err := m.store.CreateTask(context.Background(), row); err != nil {
 		return fmt.Errorf("创建任务记录失败: %w", err)
@@ -499,7 +539,7 @@ func (m *Manager) persist(t *task) {
 	}
 	if err := m.store.UpdateTaskProgress(ctx, dto.ID,
 		dto.Stats.Total, dto.Stats.Downloaded, dto.Stats.Failed, dto.Stats.Skipped,
-		dto.Stats.TotalSize, dto.Stats.DownloadedSize); err != nil {
+		dto.Stats.TotalSize, dto.Stats.DownloadedSize, dto.ExpectedTotal); err != nil {
 		m.logger.Warn("持久化任务进度失败: %v", err)
 	}
 }
@@ -525,7 +565,15 @@ func (m *Manager) handleRecordEvent(_ context.Context, evt downloader.RecordEven
 		m.mu.Unlock()
 		if t != nil {
 			t.applyRecordEvent(evt)
-			m.notify(t)
+			if now, trailing := t.markRecordNotify(); now {
+				m.notify(t)
+			} else if trailing {
+				// 尾随补发：限频窗口结束后发一次，携带此刻最新的累计统计
+				time.AfterFunc(recordNotifyMinGap, func() {
+					t.clearRecordTrailing()
+					m.notify(t)
+				})
+			}
 		}
 	}
 	select {

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,12 +27,13 @@ func TestTaskCRUDRoundTrip(t *testing.T) {
 
 	created := time.Now().Add(-time.Hour).Truncate(time.Second)
 	task := &TaskRow{
-		ID:        "task-1",
-		Kind:      "scan",
-		ChatID:    100,
-		ChatTitle: "测试群组",
-		Status:    TaskStatusPending,
-		CreatedAt: created,
+		ID:            "task-1",
+		Kind:          "scan",
+		ChatID:        100,
+		ChatTitle:     "测试群组",
+		Status:        TaskStatusPending,
+		CreatedAt:     created,
+		ExpectedTotal: 42,
 	}
 	if err := s.CreateTask(ctx, task); err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
@@ -44,7 +46,7 @@ func TestTaskCRUDRoundTrip(t *testing.T) {
 	if got == nil {
 		t.Fatal("GetTask() = nil, want task")
 	}
-	if got.Kind != "scan" || got.ChatTitle != "测试群组" || got.Status != TaskStatusPending {
+	if got.Kind != "scan" || got.ChatTitle != "测试群组" || got.Status != TaskStatusPending || got.ExpectedTotal != 42 {
 		t.Fatalf("GetTask() = %+v, mismatch", got)
 	}
 	if got.StartedAt != nil || got.FinishedAt != nil {
@@ -75,12 +77,15 @@ func TestTaskCRUDRoundTrip(t *testing.T) {
 		t.Fatalf("started_at changed on re-run transition: got %v, want %v", got.StartedAt, firstStartedAt)
 	}
 
-	if err := s.UpdateTaskProgress(ctx, "task-1", 10, 6, 2, 2, 1000, 600); err != nil {
+	if err := s.UpdateTaskProgress(ctx, "task-1", 10, 6, 2, 2, 1000, 600, 50); err != nil {
 		t.Fatalf("UpdateTaskProgress() error = %v", err)
 	}
 	got, _ = s.GetTask(ctx, "task-1")
 	if got.Total != 10 || got.Downloaded != 6 || got.Failed != 2 || got.Skipped != 2 || got.TotalSize != 1000 || got.DownloadedSize != 600 {
 		t.Fatalf("progress mismatch: %+v", got)
+	}
+	if got.ExpectedTotal != 50 {
+		t.Fatalf("ExpectedTotal = %d, want 50", got.ExpectedTotal)
 	}
 
 	if err := s.UpdateTaskStatus(ctx, "task-1", TaskStatusFailed, "网络错误"); err != nil {
@@ -105,6 +110,65 @@ func TestTaskCRUDRoundTrip(t *testing.T) {
 	}
 	if len(list) != 2 || list[0].ID != "task-2" || list[1].ID != "task-1" {
 		t.Fatalf("ListTasks() = %+v, want [task-2, task-1]", list)
+	}
+}
+
+// TestOpen_MigratesLegacyTasksTable 验证旧库（无 expected_total 列）经 Open 自动补列且可正常读写
+func TestOpen_MigratesLegacyTasksTable(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+
+	legacy, err := sql.Open(driverName, "file:"+dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	const legacySchema = `
+CREATE TABLE tasks (
+  id              TEXT PRIMARY KEY,
+  kind            TEXT NOT NULL,
+  chat_id         INTEGER NOT NULL,
+  chat_title      TEXT,
+  status          TEXT NOT NULL,
+  created_at      INTEGER NOT NULL,
+  started_at      INTEGER,
+  finished_at     INTEGER,
+  error           TEXT,
+  total           INTEGER DEFAULT 0,
+  downloaded      INTEGER DEFAULT 0,
+  failed          INTEGER DEFAULT 0,
+  skipped         INTEGER DEFAULT 0,
+  total_size      INTEGER DEFAULT 0,
+  downloaded_size INTEGER DEFAULT 0
+);
+INSERT INTO tasks (id, kind, chat_id, status, created_at) VALUES ('legacy-1', 'history', 1, 'completed', 1);`
+	if _, err := legacy.Exec(legacySchema); err != nil {
+		t.Fatalf("create legacy schema error = %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy db error = %v", err)
+	}
+
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() on legacy db error = %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	ctx := context.Background()
+	got, err := s.GetTask(ctx, "legacy-1")
+	if err != nil {
+		t.Fatalf("GetTask(legacy-1) error = %v", err)
+	}
+	if got == nil || got.ExpectedTotal != 0 {
+		t.Fatalf("GetTask(legacy-1) = %+v, want ExpectedTotal 0", got)
+	}
+
+	task := &TaskRow{ID: "new-1", Kind: "history", ChatID: 2, Status: TaskStatusPending, CreatedAt: time.Now(), ExpectedTotal: 7}
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	got, err = s.GetTask(ctx, "new-1")
+	if err != nil || got == nil || got.ExpectedTotal != 7 {
+		t.Fatalf("GetTask(new-1) = %+v, err = %v, want ExpectedTotal 7", got, err)
 	}
 }
 

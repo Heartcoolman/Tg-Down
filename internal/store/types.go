@@ -19,6 +19,7 @@ type TaskRow struct {
 	Skipped        int
 	TotalSize      int64
 	DownloadedSize int64
+	ExpectedTotal  int64
 }
 
 // 任务状态常量

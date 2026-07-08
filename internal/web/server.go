@@ -342,6 +342,8 @@ func (s *Server) snapshot() stateSnapshot {
 		Stats:            s.client.Stats(),
 		Media:            s.client.ActiveMedia(),
 		MediaConcurrency: downloadSettingsDTO{MaxConcurrent: s.client.DownloadConcurrency(), Active: s.client.ActiveDownloadCount()},
+		AllPaused:        s.client.AllMediaPaused(),
+		SpeedBps:         s.client.DownloadSpeed(),
 	}
 }
 
@@ -376,6 +378,8 @@ type stateSnapshot struct {
 	Stats            downloader.Stats           `json:"stats"`
 	Media            []downloader.MediaProgress `json:"media"`
 	MediaConcurrency downloadSettingsDTO        `json:"media_concurrency"`
+	AllPaused        bool                       `json:"all_paused"`
+	SpeedBps         int64                      `json:"speed_bps"`
 }
 
 type logEntry struct {

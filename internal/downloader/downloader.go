@@ -89,7 +89,25 @@ type Downloader struct {
 	progressKeyByFile map[int32]map[string]struct{} // 同一 TDLib file id 可对应多个并发下载键
 	controlMu         sync.Mutex
 	controls          map[string]*mediaControl
+	allPaused         bool // controlMu 保护：全局暂停闸，置位后新注册媒体以暂停态开始
+
+	rateMu      sync.Mutex
+	rateLast    map[int32]int64 // TDLib file id -> 上次观测的已下载字节数（按文件去重，避免多键扇出重复计数）
+	rateCum     int64           // 累计观测下载字节
+	rateSamples []rateSample    // (时刻, 累计字节) 采样，按时间递增
 }
+
+type rateSample struct {
+	at    time.Time
+	bytes int64
+}
+
+const (
+	// speedWindow 是下载速度滑动窗口长度
+	speedWindow = 5 * time.Second
+	// speedSampleMinGap 是相邻速率采样的最小间隔，限制采样密度
+	speedSampleMinGap = 200 * time.Millisecond
+)
 
 type mediaControl struct {
 	mu             sync.Mutex
@@ -123,6 +141,7 @@ func New(downloadPath string, maxConcurrent int, logger *logger.Logger) *Downloa
 		progressByKey:     make(map[string]*MediaProgress),
 		progressKeyByFile: make(map[int32]map[string]struct{}),
 		controls:          make(map[string]*mediaControl),
+		rateLast:          make(map[int32]int64),
 	}
 }
 
@@ -326,6 +345,7 @@ func (d *Downloader) UpdateProgress(tdFileID int32, downloaded, total int64, com
 		return
 	}
 	now := time.Now()
+	d.noteFileBytes(tdFileID, downloaded, now)
 	for key := range keys {
 		p := d.progressByKey[key]
 		if p == nil {
@@ -353,6 +373,50 @@ func (d *Downloader) UpdateProgress(tdFileID int32, downloaded, total int64, com
 		}
 		p.UpdatedAt = now
 	}
+}
+
+// noteFileBytes 按 TDLib 文件维度累计下载字节正增量并采样，用于计算聚合下载速度。
+// downloaded 变小视为重新下载，只重置基线不计负增量。
+func (d *Downloader) noteFileBytes(fileID int32, downloaded int64, now time.Time) {
+	if downloaded < 0 {
+		return
+	}
+	d.rateMu.Lock()
+	defer d.rateMu.Unlock()
+	if last := d.rateLast[fileID]; downloaded > last {
+		d.rateCum += downloaded - last
+	}
+	d.rateLast[fileID] = downloaded
+	if n := len(d.rateSamples); n == 0 || now.Sub(d.rateSamples[n-1].at) >= speedSampleMinGap {
+		d.rateSamples = append(d.rateSamples, rateSample{at: now, bytes: d.rateCum})
+	}
+	d.pruneSamplesLocked(now)
+}
+
+func (d *Downloader) pruneSamplesLocked(now time.Time) {
+	cut := 0
+	for cut < len(d.rateSamples) && now.Sub(d.rateSamples[cut].at) > speedWindow {
+		cut++
+	}
+	d.rateSamples = d.rateSamples[cut:]
+}
+
+// SpeedBps 返回滑动窗口内的平均下载速度（字节/秒），无近期数据时为 0。
+func (d *Downloader) SpeedBps() int64 { return d.speedAt(time.Now()) }
+
+func (d *Downloader) speedAt(now time.Time) int64 {
+	d.rateMu.Lock()
+	defer d.rateMu.Unlock()
+	d.pruneSamplesLocked(now)
+	if len(d.rateSamples) == 0 {
+		return 0
+	}
+	oldest := d.rateSamples[0]
+	elapsed := now.Sub(oldest.at).Seconds()
+	if elapsed <= 0 {
+		return 0
+	}
+	return int64(float64(d.rateCum-oldest.bytes) / elapsed)
 }
 
 func (d *Downloader) startProgress(media *MediaInfo, filePath string) string {
@@ -384,10 +448,14 @@ func (d *Downloader) startProgress(media *MediaInfo, filePath string) string {
 	}
 	d.progressMu.Unlock()
 	d.controlMu.Lock()
-	ctrl := &mediaControl{}
+	ctrl := &mediaControl{paused: d.allPaused}
 	ctrl.cond = sync.NewCond(&ctrl.mu)
 	d.controls[key] = ctrl
+	paused := d.allPaused
 	d.controlMu.Unlock()
+	if paused {
+		d.markProgressStatus(key, "paused")
+	}
 	return key
 }
 
@@ -416,6 +484,9 @@ func (d *Downloader) finishProgress(key string, media *MediaInfo, status string)
 			delete(set, key)
 			if len(set) == 0 {
 				delete(d.progressKeyByFile, media.TDFileID)
+				d.rateMu.Lock()
+				delete(d.rateLast, media.TDFileID)
+				d.rateMu.Unlock()
 			}
 		}
 	}
@@ -491,6 +562,43 @@ func (d *Downloader) ResumeMedia(id string) error {
 	ctrl.mu.Unlock()
 	d.markProgressStatus(id, "queued")
 	return nil
+}
+
+// PauseAll 暂停全部排队中/下载中的媒体，并让此后新入队的媒体以暂停态开始。
+func (d *Downloader) PauseAll(ctx context.Context) {
+	d.controlMu.Lock()
+	d.allPaused = true
+	ids := make([]string, 0, len(d.controls))
+	for id := range d.controls {
+		ids = append(ids, id)
+	}
+	d.controlMu.Unlock()
+	for _, id := range ids {
+		if err := d.PauseMedia(ctx, id); err != nil {
+			d.logger.Debug("暂停媒体失败（可能已结束）: %v", err)
+		}
+	}
+}
+
+// ResumeAll 解除全局暂停闸并继续全部已暂停的媒体。
+func (d *Downloader) ResumeAll() {
+	d.controlMu.Lock()
+	d.allPaused = false
+	ids := make([]string, 0, len(d.controls))
+	for id := range d.controls {
+		ids = append(ids, id)
+	}
+	d.controlMu.Unlock()
+	for _, id := range ids {
+		_ = d.ResumeMedia(id)
+	}
+}
+
+// AllPaused 返回全局暂停闸状态。
+func (d *Downloader) AllPaused() bool {
+	d.controlMu.Lock()
+	defer d.controlMu.Unlock()
+	return d.allPaused
 }
 
 func (d *Downloader) mediaControl(id string) *mediaControl {
@@ -824,28 +932,17 @@ func (d *Downloader) DownloadSingle(ctx context.Context, media *MediaInfo) {
 	}
 }
 
-// DownloadBatch 批量下载媒体文件，返回的 WaitGroup 供调用方等待本批次完成
-func (d *Downloader) DownloadBatch(ctx context.Context, mediaList []*MediaInfo) *sync.WaitGroup {
+// PlanBatch 将一批已发现的媒体计入统计（Total/TotalSize）；实际下载由调用方逐个触发
+func (d *Downloader) PlanBatch(mediaList []*MediaInfo) {
+	if len(mediaList) == 0 {
+		return
+	}
 	d.stats.mu.Lock()
 	d.stats.Total += len(mediaList)
 	for _, media := range mediaList {
 		d.stats.TotalSize += media.FileSize
 	}
 	d.stats.mu.Unlock()
-
-	d.logger.Info("开始批量下载 %d 个文件", len(mediaList))
-
-	wg := &sync.WaitGroup{}
-	for _, media := range mediaList {
-		wg.Add(1)
-		go func(m *MediaInfo) {
-			defer wg.Done()
-			if err := d.DownloadMedia(ctx, m); err != nil {
-				d.logger.Error("下载媒体文件失败: %v", err)
-			}
-		}(media)
-	}
-	return wg
 }
 
 // PrintStats 打印下载统计

@@ -24,6 +24,8 @@ const (
 	DefaultBatchSize     = 100
 	DefaultChunkSize     = 512 // 512KB
 	DefaultMaxWorkers    = 4
+	// DefaultPartitionSize 是历史下载的在途媒体上限（扫描最多领先下载的数量）
+	DefaultPartitionSize = 100
 
 	// 默认重试配置
 	DefaultMaxRetries = 3
@@ -76,6 +78,7 @@ type DownloadConfig struct {
 	Path          string `yaml:"path"`
 	MaxConcurrent int    `yaml:"max_concurrent"` // 同时下载的文件数
 	BatchSize     int    `yaml:"batch_size"`     // 每批拉取的历史消息数
+	PartitionSize int    `yaml:"partition_size"` // 历史下载在途媒体上限（扫描最多领先下载的数量）
 	// Deprecated: 切换到 TDLib 引擎后失效。TDLib 自管分片大小与单文件并行度。保留仅为向后兼容。
 	ChunkSize int `yaml:"chunk_size"`
 	// Deprecated: 切换到 TDLib 引擎后失效。TDLib 自管单文件下载并行度。保留仅为向后兼容。
@@ -232,6 +235,12 @@ func loadDownloadConfig(config *Config) {
 		}
 	}
 
+	if partitionSize := os.Getenv("PARTITION_SIZE"); partitionSize != "" {
+		if partition, err := strconv.Atoi(partitionSize); err == nil {
+			config.Download.PartitionSize = partition
+		}
+	}
+
 	if chunkSize := os.Getenv("CHUNK_SIZE"); chunkSize != "" {
 		if chunk, err := strconv.Atoi(chunkSize); err == nil {
 			config.Download.ChunkSize = chunk
@@ -332,6 +341,9 @@ func setDefaults(config *Config) {
 	// 通过校验后进入下载/退避热路径（如负 BaseDelay 使退避为负、time.After 立即触发导致零延迟热重试）。
 	if config.Download.BatchSize <= 0 {
 		config.Download.BatchSize = DefaultBatchSize
+	}
+	if config.Download.PartitionSize <= 0 {
+		config.Download.PartitionSize = DefaultPartitionSize
 	}
 	// chunk_size 必须是合法的 Telegram 分片大小：4KB 的倍数且能整除 1MB，否则回退默认值
 	if !validChunkSizes[config.Download.ChunkSize] {

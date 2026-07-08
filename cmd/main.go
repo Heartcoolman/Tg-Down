@@ -217,9 +217,27 @@ func executeMode(
 	}
 }
 
+// logHistoryMediaCount 在下载前统计并打印聊天媒体总数（近似值）；
+// 统计失败仅告警不阻断，返回非 nil 仅表示 ctx 已取消
+func logHistoryMediaCount(ctx context.Context, client *telegram.Client, log *logger.Logger, chatID int64) error {
+	total, err := client.CountHistoryMedia(ctx, chatID)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
+		log.Warn("统计媒体总数失败（继续下载）: %v", err)
+		return nil
+	}
+	log.Info("该聊天共约 %d 个媒体文件", total)
+	return nil
+}
+
 // executeDownloadHistory 执行下载历史媒体模式
 func executeDownloadHistory(ctx context.Context, client *telegram.Client, log *logger.Logger, targetChatID int64) error {
 	log.Info("开始下载历史媒体文件...")
+	if err := logHistoryMediaCount(ctx, client, log, targetChatID); err != nil {
+		return nil
+	}
 	taskID := fmt.Sprintf("cli-history-%d", time.Now().UnixNano())
 	if err := client.DownloadHistoryMedia(ctx, targetChatID, taskID); err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -249,6 +267,9 @@ func executeMonitorNewMessages(
 // executeDownloadAndMonitor 执行下载历史并监控新消息模式
 func executeDownloadAndMonitor(ctx context.Context, client *telegram.Client, log *logger.Logger, targetChatID int64) error {
 	log.Info("开始下载历史媒体文件...")
+	if err := logHistoryMediaCount(ctx, client, log, targetChatID); err != nil {
+		return nil
+	}
 	taskID := fmt.Sprintf("cli-history-%d", time.Now().UnixNano())
 	if err := client.DownloadHistoryMedia(ctx, targetChatID, taskID); err != nil {
 		if errors.Is(err, context.Canceled) {

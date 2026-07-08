@@ -374,6 +374,124 @@ func TestDownloader_SetMaxConcurrent(t *testing.T) {
 	}
 }
 
+// TestDownloader_PauseAllAndResumeAll 覆盖全局暂停闸：一个下载中、一个排队中的媒体
+// 全部暂停（pauseFunc 仅对下载中的调用一次）；闸门置位期间新提交的媒体出生即暂停；
+// ResumeAll 后三者全部完成。
+func TestDownloader_PauseAllAndResumeAll(t *testing.T) {
+	dir := t.TempDir()
+	d := New(dir, 1, logger.New(logger.LevelError))
+
+	var pauseCalls, firstCalls int32
+	var pauseOnce sync.Once
+	pauseSignal := make(chan struct{})
+	firstStarted := make(chan struct{})
+	thirdRan := make(chan struct{}, 1)
+
+	d.SetPauseFunc(func(_ context.Context, _ *MediaInfo) error {
+		atomic.AddInt32(&pauseCalls, 1)
+		pauseOnce.Do(func() { close(pauseSignal) })
+		return nil
+	})
+	d.SetDownloadFunc(func(_ context.Context, m *MediaInfo, filePath string) error {
+		if m.MessageID == 1 && atomic.AddInt32(&firstCalls, 1) == 1 {
+			close(firstStarted)
+			<-pauseSignal // 占住唯一槽位直到全局暂停触发底层取消
+			return context.Canceled
+		}
+		if m.MessageID == 3 {
+			select {
+			case thirdRan <- struct{}{}:
+			default:
+			}
+		}
+		return os.WriteFile(filePath, []byte("data"), 0600)
+	})
+
+	first := &MediaInfo{TaskID: "t", MessageID: 1, TDFileID: 1, ChatID: 100, MediaType: "photo", FileName: "1.jpg"}
+	second := &MediaInfo{TaskID: "t", MessageID: 2, TDFileID: 2, ChatID: 100, MediaType: "photo", FileName: "2.jpg"}
+	third := &MediaInfo{TaskID: "t", MessageID: 3, TDFileID: 3, ChatID: 100, MediaType: "photo", FileName: "3.jpg"}
+
+	done1 := make(chan error, 1)
+	go func() { done1 <- d.DownloadMedia(context.Background(), first) }()
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first download did not start")
+	}
+
+	done2 := make(chan error, 1)
+	go func() { done2 <- d.DownloadMedia(context.Background(), second) }()
+	waitForStatus(t, d, mediaProgressKey(second), "queued")
+
+	d.PauseAll(context.Background())
+	waitForStatus(t, d, mediaProgressKey(first), "paused")
+	waitForStatus(t, d, mediaProgressKey(second), "paused")
+	if got := atomic.LoadInt32(&pauseCalls); got != 1 {
+		t.Fatalf("pauseFunc calls = %d, want 1 (仅下载中的媒体)", got)
+	}
+	if !d.AllPaused() {
+		t.Fatal("AllPaused() = false, want true")
+	}
+
+	// 闸门置位期间提交的新媒体出生即暂停，且不执行下载
+	done3 := make(chan error, 1)
+	go func() { done3 <- d.DownloadMedia(context.Background(), third) }()
+	waitForStatus(t, d, mediaProgressKey(third), "paused")
+	select {
+	case <-thirdRan:
+		t.Fatal("全局暂停期间新媒体仍执行了下载")
+	default:
+	}
+
+	d.ResumeAll()
+	if d.AllPaused() {
+		t.Fatal("AllPaused() = true after ResumeAll, want false")
+	}
+	for i, done := range []chan error{done1, done2, done3} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("download %d error = %v", i+1, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("download %d did not finish after ResumeAll", i+1)
+		}
+	}
+	if items := d.ActiveMedia(); len(items) != 0 {
+		t.Fatalf("ActiveMedia() after finish = %+v, want empty", items)
+	}
+}
+
+// TestDownloader_SpeedTracking 直接驱动速率统计：正增量计速、回退只重置基线、窗口过期归零
+func TestDownloader_SpeedTracking(t *testing.T) {
+	d := newTestDownloader(t.TempDir())
+	t0 := time.Now()
+	mb := int64(1 << 20)
+
+	d.noteFileBytes(1, mb, t0)
+	d.noteFileBytes(1, 3*mb, t0.Add(time.Second))
+	if got, want := d.speedAt(t0.Add(time.Second)), 2*mb; got != want {
+		t.Fatalf("speedAt(+1s) = %d, want %d", got, want)
+	}
+
+	// 字节数回退（重新下载）：不计负增量，速度只随时间摊薄
+	d.noteFileBytes(1, mb, t0.Add(1500*time.Millisecond))
+	if got, want := d.speedAt(t0.Add(1500*time.Millisecond)), int64(float64(2*mb)/1.5); got != want {
+		t.Fatalf("speedAt(+1.5s) after regress = %d, want %d", got, want)
+	}
+
+	// 回退后的再增长以新基线计增量
+	d.noteFileBytes(1, 2*mb, t0.Add(2*time.Second))
+	if got, want := d.speedAt(t0.Add(2*time.Second)), int64(float64(3*mb)/2); got != want {
+		t.Fatalf("speedAt(+2s) = %d, want %d", got, want)
+	}
+
+	// 窗口过期后无样本，速度归零
+	if got := d.speedAt(t0.Add(20 * time.Second)); got != 0 {
+		t.Fatalf("speedAt(+20s) = %d, want 0", got)
+	}
+}
+
 func TestDownloader_PauseAndResumeMedia(t *testing.T) {
 	dir := t.TempDir()
 	d := New(dir, 1, logger.New(logger.LevelError))

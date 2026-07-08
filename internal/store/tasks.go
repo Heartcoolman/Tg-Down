@@ -18,13 +18,13 @@ var terminalTaskStatuses = map[string]bool{
 func (s *Store) CreateTask(ctx context.Context, t *TaskRow) error {
 	const q = `
 INSERT INTO tasks (id, kind, chat_id, chat_title, status, created_at, started_at, finished_at,
-                    error, total, downloaded, failed, skipped, total_size, downloaded_size)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                    error, total, downloaded, failed, skipped, total_size, downloaded_size, expected_total)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err := s.execContext(ctx, q,
 		t.ID, t.Kind, t.ChatID, t.ChatTitle, t.Status, timeToUnix(t.CreatedAt),
 		timePtrToUnix(t.StartedAt), timePtrToUnix(t.FinishedAt), nullString(t.Error),
-		t.Total, t.Downloaded, t.Failed, t.Skipped, t.TotalSize, t.DownloadedSize,
+		t.Total, t.Downloaded, t.Failed, t.Skipped, t.TotalSize, t.DownloadedSize, t.ExpectedTotal,
 	)
 	if err != nil {
 		return fmt.Errorf("创建任务失败: %w", err)
@@ -56,13 +56,15 @@ WHERE id = ?`
 
 // UpdateTaskProgress 更新任务的进度统计
 func (s *Store) UpdateTaskProgress(
-	ctx context.Context, id string, total, downloaded, failed, skipped int, totalSize, downloadedSize int64,
+	ctx context.Context, id string, total, downloaded, failed, skipped int,
+	totalSize, downloadedSize, expectedTotal int64,
 ) error {
 	const q = `
-UPDATE tasks SET total = ?, downloaded = ?, failed = ?, skipped = ?, total_size = ?, downloaded_size = ?
+UPDATE tasks SET total = ?, downloaded = ?, failed = ?, skipped = ?, total_size = ?, downloaded_size = ?,
+  expected_total = ?
 WHERE id = ?`
 
-	res, err := s.execContext(ctx, q, total, downloaded, failed, skipped, totalSize, downloadedSize, id)
+	res, err := s.execContext(ctx, q, total, downloaded, failed, skipped, totalSize, downloadedSize, expectedTotal, id)
 	if err != nil {
 		return fmt.Errorf("更新任务进度失败: %w", err)
 	}
@@ -73,7 +75,7 @@ WHERE id = ?`
 func (s *Store) ListTasks(ctx context.Context) ([]*TaskRow, error) {
 	const q = `
 SELECT id, kind, chat_id, chat_title, status, created_at, started_at, finished_at,
-       error, total, downloaded, failed, skipped, total_size, downloaded_size
+       error, total, downloaded, failed, skipped, total_size, downloaded_size, expected_total
 FROM tasks ORDER BY created_at DESC`
 
 	rows, err := s.db.QueryContext(ctx, q)
@@ -100,7 +102,7 @@ FROM tasks ORDER BY created_at DESC`
 func (s *Store) GetTask(ctx context.Context, id string) (*TaskRow, error) {
 	const q = `
 SELECT id, kind, chat_id, chat_title, status, created_at, started_at, finished_at,
-       error, total, downloaded, failed, skipped, total_size, downloaded_size
+       error, total, downloaded, failed, skipped, total_size, downloaded_size, expected_total
 FROM tasks WHERE id = ?`
 
 	row := s.db.QueryRowContext(ctx, q, id)
@@ -126,6 +128,7 @@ func scanTaskRow(row scanner) (*TaskRow, error) {
 	if err := row.Scan(
 		&t.ID, &t.Kind, &t.ChatID, &chatTitle, &t.Status, &createdAt, &startedAt, &finishedAt,
 		&errMsg, &t.Total, &t.Downloaded, &t.Failed, &t.Skipped, &t.TotalSize, &t.DownloadedSize,
+		&t.ExpectedTotal,
 	); err != nil {
 		return nil, err
 	}

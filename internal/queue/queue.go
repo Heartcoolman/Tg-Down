@@ -32,12 +32,20 @@ const (
 	StatusCanceled  Status = "canceled"
 )
 
+// history 任务运行阶段常量（仅内存态，不落库：重启后 running 任务一律回收为 failed）
+const (
+	phaseCounting    = "counting"
+	phaseDownloading = "downloading"
+)
+
 // ChatDownloader 是 Manager 依赖的最小接口（而非直接依赖 *telegram.Client），
 // 使本包可在无真实 TDLib 连接的情况下进行单元测试。
 type ChatDownloader interface {
+	CountHistoryMedia(ctx context.Context, chatID int64) (int64, error)
 	DownloadHistoryMedia(ctx context.Context, chatID int64, taskID string) error
 	SetMonitorTask(taskID string, chatID int64)
 	SetRecordFunc(fn func(context.Context, downloader.RecordEvent))
+	SetScanProgressFunc(fn func(taskID string, scannedMessages, foundMedia int64))
 }
 
 // TaskDTO 是任务状态对外暴露的值拷贝快照，用于 List/Get/onChange，不持有内部指针
@@ -52,4 +60,11 @@ type TaskDTO struct {
 	StartedAt  *time.Time       `json:"started_at,omitempty"`
 	FinishedAt *time.Time       `json:"finished_at,omitempty"`
 	Stats      downloader.Stats `json:"stats"`
+	// Phase 是 history 任务的运行阶段（counting/downloading），仅运行中有值
+	Phase string `json:"phase,omitempty"`
+	// ExpectedTotal 是下载前统计出的媒体总数（近似值），0 表示未知
+	ExpectedTotal int64 `json:"expected_total,omitempty"`
+	// ScannedMessages/FoundMedia 是 history 任务扫描历史的实时进度（仅运行中有值，不落库）
+	ScannedMessages int64 `json:"scanned_messages,omitempty"`
+	FoundMedia      int64 `json:"found_media,omitempty"`
 }

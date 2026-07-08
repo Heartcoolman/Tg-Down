@@ -18,20 +18,25 @@ const testWaitTimeout = time.Second
 // fakeClient 是 ChatDownloader 的测试替身：DownloadHistoryMedia 按 taskID 阻塞在一个延迟创建的
 // gate 上，直至测试调用 release(taskID) 或 ctx 被取消，便于精确控制任务的执行时序。
 type fakeClient struct {
-	mu            sync.Mutex
-	gates         map[string]chan struct{}
-	errs          map[string]error
-	calls         map[string]int
-	recordFn      func(context.Context, downloader.RecordEvent)
-	monitorTaskID string
-	monitorChatID int64
+	mu             sync.Mutex
+	gates          map[string]chan struct{}
+	errs           map[string]error
+	calls          map[string]int
+	counts         map[int64]int64
+	countErrs      map[int64]error
+	recordFn       func(context.Context, downloader.RecordEvent)
+	scanProgressFn func(taskID string, scannedMessages, foundMedia int64)
+	monitorTaskID  string
+	monitorChatID  int64
 }
 
 func newFakeClient() *fakeClient {
 	return &fakeClient{
-		gates: make(map[string]chan struct{}),
-		errs:  make(map[string]error),
-		calls: make(map[string]int),
+		gates:     make(map[string]chan struct{}),
+		errs:      make(map[string]error),
+		calls:     make(map[string]int),
+		counts:    make(map[int64]int64),
+		countErrs: make(map[int64]error),
 	}
 }
 
@@ -67,6 +72,27 @@ func (f *fakeClient) monitor() (string, int64) {
 	return f.monitorTaskID, f.monitorChatID
 }
 
+func (f *fakeClient) setCount(chatID, total int64) {
+	f.mu.Lock()
+	f.counts[chatID] = total
+	f.mu.Unlock()
+}
+
+func (f *fakeClient) setCountErr(chatID int64, err error) {
+	f.mu.Lock()
+	f.countErrs[chatID] = err
+	f.mu.Unlock()
+}
+
+func (f *fakeClient) CountHistoryMedia(_ context.Context, chatID int64) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.countErrs[chatID]; err != nil {
+		return 0, err
+	}
+	return f.counts[chatID], nil
+}
+
 func (f *fakeClient) DownloadHistoryMedia(ctx context.Context, _ int64, taskID string) error {
 	f.mu.Lock()
 	f.calls[taskID]++
@@ -94,6 +120,12 @@ func (f *fakeClient) SetMonitorTask(taskID string, chatID int64) {
 func (f *fakeClient) SetRecordFunc(fn func(context.Context, downloader.RecordEvent)) {
 	f.mu.Lock()
 	f.recordFn = fn
+	f.mu.Unlock()
+}
+
+func (f *fakeClient) SetScanProgressFunc(fn func(taskID string, scannedMessages, foundMedia int64)) {
+	f.mu.Lock()
+	f.scanProgressFn = fn
 	f.mu.Unlock()
 }
 
@@ -157,6 +189,68 @@ func TestEnqueueLifecycle_QueuedRunningCompleted(t *testing.T) {
 	waitForStatus(t, m, dto.ID, StatusRunning, testWaitTimeout)
 	fc.release(dto.ID)
 	waitForStatus(t, m, dto.ID, StatusCompleted, testWaitTimeout)
+}
+
+// TestRunHistoryTask_CountsBeforeDownload 验证计数阶段先于下载完成：
+// 下载仍阻塞在 gate 上时，ExpectedTotal 已可见且已落库，phase 已进入 downloading
+func TestRunHistoryTask_CountsBeforeDownload(t *testing.T) {
+	fc := newFakeClient()
+	fc.setCount(1, 42)
+	st := newTestStore(t)
+	m := NewManager(fc, st, logger.New(logger.LevelError), 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go m.Run(ctx)
+
+	dto, err := m.Enqueue(KindHistory, 1, "chat-1")
+	if err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+	waitForStatus(t, m, dto.ID, StatusRunning, testWaitTimeout)
+
+	// 下载被 gate 阻塞期间，总数与阶段应已就绪
+	deadline := time.Now().Add(testWaitTimeout)
+	for {
+		got, ok := m.Get(dto.ID)
+		if ok && got.ExpectedTotal == 42 && got.Phase == phaseDownloading {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("等待计数完成超时，当前: %+v", got)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	row, err := st.GetTask(context.Background(), dto.ID)
+	if err != nil || row == nil || row.ExpectedTotal != 42 {
+		t.Fatalf("store row = %+v, err = %v, want ExpectedTotal 42（下载前已落库）", row, err)
+	}
+
+	fc.release(dto.ID)
+	final := waitForStatus(t, m, dto.ID, StatusCompleted, testWaitTimeout)
+	if final.Phase != "" {
+		t.Fatalf("终态 Phase = %q, want 空", final.Phase)
+	}
+	if final.ExpectedTotal != 42 {
+		t.Fatalf("终态 ExpectedTotal = %d, want 42", final.ExpectedTotal)
+	}
+}
+
+// TestRunHistoryTask_CountFailureFallsBack 验证计数失败仅回退为未知总数，任务照常执行
+func TestRunHistoryTask_CountFailureFallsBack(t *testing.T) {
+	m, fc := newTestManager(t, 1)
+	fc.setCountErr(1, errors.New("count boom"))
+
+	dto, err := m.Enqueue(KindHistory, 1, "chat-1")
+	if err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+	waitForStatus(t, m, dto.ID, StatusRunning, testWaitTimeout)
+	fc.release(dto.ID)
+	final := waitForStatus(t, m, dto.ID, StatusCompleted, testWaitTimeout)
+	if final.ExpectedTotal != 0 {
+		t.Fatalf("ExpectedTotal = %d, want 0（计数失败保持未知）", final.ExpectedTotal)
+	}
 }
 
 // TestCancel_QueuedTask 验证取消排队中的任务不会触发其实际执行
