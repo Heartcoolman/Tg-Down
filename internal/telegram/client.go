@@ -259,7 +259,7 @@ func (c *Client) Connect(ctx context.Context, codeFn CodeFunc, passwordFn Passwo
 	apiID, apiHash, phone := c.config.API.ID, c.config.API.Hash, c.config.API.Phone
 	c.credMu.Unlock()
 	if !credentialsValid {
-		return errors.New("Telegram API 凭据无效")
+		return errors.New("无效的 Telegram API 凭据")
 	}
 	if err := validateSessionDBPath(c.config.Session.Dir, c.dbDir); err != nil {
 		return fmt.Errorf("会话目录不安全: %w", err)
@@ -1359,10 +1359,21 @@ func (c *Client) DownloadFile(ctx context.Context, media *downloader.MediaInfo, 
 	defer c.finishDownloadAttempt(media.TDFileID, attempt)
 	// 任务取消时 tdCall 会立即返回，但底层同步传输仍使用 background context；
 	// 主动通知 TDLib 取消，避免它在后台继续占用网络与缓存文件。
+	//
+	// AfterFunc 在独立 goroutine 里执行。若不等它结束，DownloadFile 返回时取消请求可能
+	// 尚未发出，monitorGeneration.wg.Wait() 便无法保证"停止监控后 TDLib 侧下载已取消"。
+	// stopCancel 返回 false 表示回调已启动，此时必须等它跑完；cancelTDDownload 自带
+	// metadataTimeout，不会无限期阻塞。
+	cancelDone := make(chan struct{})
 	stopCancel := context.AfterFunc(ctx, func() {
+		defer close(cancelDone)
 		_ = c.cancelTDDownload(context.Background(), td, media.TDFileID)
 	})
-	defer stopCancel()
+	defer func() {
+		if !stopCancel() {
+			<-cancelDone
+		}
+	}()
 
 	return c.retrier.Do(attemptCtx, func() error {
 		c.logger.Info("下载文件: %s (大小: %d bytes)", media.FileName, media.FileSize)

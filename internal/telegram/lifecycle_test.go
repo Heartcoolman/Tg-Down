@@ -258,7 +258,7 @@ func TestClientCredentialValidationUsesConfigRules(t *testing.T) {
 
 	c.SetCredentials(-1, validHash, "+12025550123")
 	err := c.Connect(context.Background(), nil, nil)
-	if err == nil || err.Error() != "Telegram API 凭据无效" {
+	if err == nil || err.Error() != "无效的 Telegram API 凭据" {
 		t.Fatalf("Connect() error = %v, want 凭据无效", err)
 	}
 	if _, statErr := os.Stat(c.dbDir); !os.IsNotExist(statErr) {
