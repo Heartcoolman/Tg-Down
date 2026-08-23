@@ -60,7 +60,7 @@ func newInstanceProxy(reg *Registry, id string) (*httputil.ReverseProxy, error) 
 				req.Header.Del("Authorization")
 			}
 		},
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = w.Write([]byte(`{"error":"无法连接到远程实例: ` + sanitizeErr(err) + `"}`))

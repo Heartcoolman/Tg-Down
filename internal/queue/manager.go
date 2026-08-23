@@ -147,52 +147,59 @@ func (m *Manager) loadTasks(ctx context.Context) {
 	defer m.mu.Unlock()
 	// ListTasks 按创建时间倒序（最新在前）返回，m.order 需保持最早在前，故逆序插入
 	for i := len(rows) - 1; i >= 0; i-- {
-		t, restoreErr := taskFromRow(rows[i])
-		if restoreErr != nil && t.kind == KindHistory &&
-			(t.status == StatusQueued || t.status == StatusRunning) {
-			t.status = StatusFailed
-			t.errMsg = restoreErr.Error()
+		m.restoreTaskRow(ctx, rows[i])
+	}
+}
+
+// restoreTaskRow 把一行任务记录归位到内存状态：无法解析且处于进行中的 history 直接终结为
+// failed；重启前排队/运行的 history 重置为 queued 并记入待恢复列表；running 的 monitor 待重启，
+// 数据异常出现多个时只保留最新一个。调用方须持有 m.mu。
+func (m *Manager) restoreTaskRow(ctx context.Context, row *store.TaskRow) {
+	t, restoreErr := taskFromRow(row)
+	if restoreErr != nil && t.kind == KindHistory &&
+		(t.status == StatusQueued || t.status == StatusRunning) {
+		t.status = StatusFailed
+		t.errMsg = restoreErr.Error()
+		now := time.Now()
+		t.finishedAt = &now
+		t.markDone()
+		if err := m.store.UpdateTaskStatus(ctx, t.id, string(t.status), t.errMsg); err != nil {
+			m.logger.Warn("持久化损坏任务状态失败: %v", err)
+		}
+		m.logger.Warn("任务 %s 无法恢复: %v", t.id, restoreErr)
+		m.tasks[t.id] = t
+		m.order = append(m.order, t)
+		return
+	}
+	switch {
+	case t.kind == KindHistory && (t.status == StatusQueued || t.status == StatusRunning):
+		t.status = StatusQueued
+		t.startedAt = nil
+		t.resumed = true
+		if err := m.store.UpdateTaskStatus(ctx, t.id, string(t.status), ""); err != nil {
+			m.logger.Warn("持久化任务恢复状态失败: %v", err)
+		}
+		m.resumeHistory = append(m.resumeHistory, t)
+		m.logger.Info("任务 %s（聊天 %d）待恢复：游标 %d", t.id, t.chatID, t.scanCursor)
+	case t.kind == KindMonitor && t.status == StatusRunning:
+		// 监控任务重启后自动恢复（用户开着的监控预期保持开启），Run 启动时重建 goroutine
+		if m.resumeMonitor == nil {
+			m.resumeMonitor = t
+		} else {
+			// 数据异常：多个 running monitor，只恢复最新的一个，其余终结
+			t.status = StatusCanceled
 			now := time.Now()
 			t.finishedAt = &now
 			t.markDone()
-			if err := m.store.UpdateTaskStatus(ctx, t.id, string(t.status), t.errMsg); err != nil {
-				m.logger.Warn("持久化损坏任务状态失败: %v", err)
-			}
-			m.logger.Warn("任务 %s 无法恢复: %v", t.id, restoreErr)
-			m.tasks[t.id] = t
-			m.order = append(m.order, t)
-			continue
-		}
-		switch {
-		case t.kind == KindHistory && (t.status == StatusQueued || t.status == StatusRunning):
-			t.status = StatusQueued
-			t.startedAt = nil
-			t.resumed = true
 			if err := m.store.UpdateTaskStatus(ctx, t.id, string(t.status), ""); err != nil {
 				m.logger.Warn("持久化任务恢复状态失败: %v", err)
 			}
-			m.resumeHistory = append(m.resumeHistory, t)
-			m.logger.Info("任务 %s（聊天 %d）待恢复：游标 %d", t.id, t.chatID, t.scanCursor)
-		case t.kind == KindMonitor && t.status == StatusRunning:
-			// 监控任务重启后自动恢复（用户开着的监控预期保持开启），Run 启动时重建 goroutine
-			if m.resumeMonitor == nil {
-				m.resumeMonitor = t
-			} else {
-				// 数据异常：多个 running monitor，只恢复最新的一个，其余终结
-				t.status = StatusCanceled
-				now := time.Now()
-				t.finishedAt = &now
-				t.markDone()
-				if err := m.store.UpdateTaskStatus(ctx, t.id, string(t.status), ""); err != nil {
-					m.logger.Warn("持久化任务恢复状态失败: %v", err)
-				}
-			}
-		default:
-			t.markDone() // 终态任务不会再有 goroutine 为其运行
 		}
-		m.tasks[t.id] = t
-		m.order = append(m.order, t)
+	default:
+		t.markDone() // 终态任务不会再有 goroutine 为其运行
 	}
+	m.tasks[t.id] = t
+	m.order = append(m.order, t)
 }
 
 // SetOnChange 设置任务生命周期变化回调（created/running/completed/failed/canceled），不逐文件触发
@@ -410,8 +417,9 @@ func (m *Manager) waitForMonitorStop() {
 	}
 }
 
-// runHistoryTask 执行单个 history 任务的完整生命周期：queued -> running -> completed/failed/canceled
-func (m *Manager) runHistoryTask(ctx context.Context, t *task) {
+// beginHistoryTask 把 queued 任务切到 running 并派生任务级 ctx。
+// 返回 false 表示任务已不在 queued（多为期间被取消），调用方直接退出。
+func (m *Manager) beginHistoryTask(ctx context.Context, t *task) (context.Context, context.CancelFunc, bool) {
 	t.mu.Lock()
 	if t.status != StatusQueued {
 		status := t.status
@@ -420,7 +428,7 @@ func (m *Manager) runHistoryTask(ctx context.Context, t *task) {
 		if status != StatusCanceled {
 			t.markDone()
 		}
-		return
+		return nil, nil, false
 	}
 	taskCtx, cancel := context.WithCancel(ctx)
 	t.status = StatusRunning
@@ -431,41 +439,51 @@ func (m *Manager) runHistoryTask(ctx context.Context, t *task) {
 
 	m.persist(t)
 	m.notify(t)
+	return taskCtx, cancel, true
+}
 
+func (m *Manager) setExpectedTotal(t *task, total int64) {
 	t.mu.Lock()
-	isSingleMessage := t.messageID != 0
-	filters := cloneHistoryFilters(t.filters)
-	mediaTypes := filters.MediaTypes
+	t.expectedTotal = total
 	t.mu.Unlock()
+	m.persist(t)
+}
 
-	// 计数阶段：下载开始前先统计媒体总数并落库+推送，前端立即可见"共约 N 个"；
-	// 单消息任务无需统计，总数恒为 1
+// countHistoryTotal 在下载开始前统计媒体总数并落库+推送，前端立即可见“共约 N 个”。
+// 单消息任务无需统计，总数恒为 1。
+func (m *Manager) countHistoryTotal(
+	ctx context.Context, t *task, isSingleMessage bool, filters downloader.HistoryFilters,
+) {
 	t.mu.Lock()
 	t.phase = phaseCounting
 	t.mu.Unlock()
 	m.notify(t)
-	if isSingleMessage {
-		t.mu.Lock()
-		t.expectedTotal = 1
-		t.mu.Unlock()
-		m.persist(t)
-	} else if !filtersHaveExactCount(filters) {
+
+	switch {
+	case isSingleMessage:
+		m.setExpectedTotal(t, 1)
+	case !filtersHaveExactCount(filters):
 		// 现有计数接口只能应用媒体类型；其余过滤条件下写入未过滤总数会让完成进度远低于 100%。
-		t.mu.Lock()
-		t.expectedTotal = 0
-		t.mu.Unlock()
-		m.persist(t)
-	} else if total, cntErr := m.client.CountHistoryMedia(taskCtx, t.chatID, mediaTypes); cntErr != nil {
-		if taskCtx.Err() == nil {
-			m.logger.Warn("统计任务 %s 媒体总数失败，回退为未知总数: %v", t.id, cntErr)
+		m.setExpectedTotal(t, 0)
+	default:
+		total, cntErr := m.client.CountHistoryMedia(ctx, t.chatID, filters.MediaTypes)
+		switch {
+		case cntErr != nil:
+			if ctx.Err() == nil {
+				m.logger.Warn("统计任务 %s 媒体总数失败，回退为未知总数: %v", t.id, cntErr)
+			}
+		case total > 0: // 0 = 服务端无法计数（如选中了贴纸），保持未知总数
+			m.logger.Info("聊天 %d 共约 %d 个媒体文件", t.chatID, total)
+			m.setExpectedTotal(t, total)
 		}
-	} else if total > 0 { // 0 = 服务端无法计数（如选中了贴纸），保持未知总数
-		m.logger.Info("聊天 %d 共约 %d 个媒体文件", t.chatID, total)
-		t.mu.Lock()
-		t.expectedTotal = total
-		t.mu.Unlock()
-		m.persist(t)
 	}
+}
+
+// buildHistorySpec 组装本轮扫描参数并切入下载阶段。
+//
+// 恢复或重试的任务先补下失败的行：这些消息可能比游标更新，仅靠游标续扫会永久漏掉。
+// 不再限定“被重启清扫的中断行”——因网络/磁盘错误真失败的文件同样需要补下。
+func (m *Manager) buildHistorySpec(ctx context.Context, t *task) *downloader.HistorySpec {
 	t.mu.Lock()
 	t.phase = phaseDownloading
 	spec := &downloader.HistorySpec{
@@ -483,16 +501,31 @@ func (m *Manager) runHistoryTask(ctx context.Context, t *task) {
 	t.mu.Unlock()
 	m.notify(t)
 
-	// 恢复或重试的任务先补下失败的行：这些消息可能比游标更新，仅靠游标续扫会永久漏掉。
-	// 不再限定"被重启清扫的中断行"——因网络/磁盘错误真失败的文件同样需要补下。
 	if resumed {
-		if ids, listErr := m.store.ListFailedByTask(taskCtx, t.id); listErr != nil {
+		if ids, listErr := m.store.ListFailedByTask(ctx, t.id); listErr != nil {
 			m.logger.Warn("查询任务 %s 失败行失败: %v", t.id, listErr)
 		} else if len(ids) > 0 {
 			m.logger.Info("任务 %s 恢复：补下 %d 个失败的媒体", t.id, len(ids))
 			spec.RetryMessageIDs = ids
 		}
 	}
+	return spec
+}
+
+// runHistoryTask 执行单个 history 任务的完整生命周期：queued -> running -> completed/failed/canceled
+func (m *Manager) runHistoryTask(ctx context.Context, t *task) {
+	taskCtx, cancel, ok := m.beginHistoryTask(ctx, t)
+	if !ok {
+		return
+	}
+
+	t.mu.Lock()
+	isSingleMessage := t.messageID != 0
+	filters := cloneHistoryFilters(t.filters)
+	t.mu.Unlock()
+
+	m.countHistoryTotal(taskCtx, t, isSingleMessage, filters)
+	spec := m.buildHistorySpec(taskCtx, t)
 
 	result, err := m.client.DownloadHistoryMedia(taskCtx, spec)
 	failedMedia := int64(0)
@@ -732,7 +765,6 @@ func (m *Manager) enqueueMonitor(chatID int64, chatTitle string) (TaskDTO, error
 		return TaskDTO{}, fmt.Errorf("任务队列已停止或正在排空")
 	}
 	prev := m.monitorTask
-	runCtx := m.runCtx
 	m.mu.Unlock()
 
 	if prev != nil {
@@ -759,7 +791,7 @@ func (m *Manager) enqueueMonitor(chatID int64, chatTitle string) (TaskDTO, error
 		m.mu.Unlock()
 		return TaskDTO{}, fmt.Errorf("任务队列已停止或正在排空")
 	}
-	runCtx = m.runCtx
+	runCtx := m.runCtx
 	if err := m.createTaskRow(t); err != nil {
 		m.mu.Unlock()
 		return TaskDTO{}, err
@@ -1109,7 +1141,7 @@ func (m *Manager) persist(t *task) {
 	if err := m.store.UpdateTaskStatus(ctx, dto.ID, dto.Status, dto.Error); err != nil {
 		m.logger.Warn("持久化任务状态失败: %v", err)
 	}
-	if err := m.store.UpdateTaskProgress(ctx, dto.ID, store.TaskProgress{
+	if err := m.store.UpdateTaskProgress(ctx, dto.ID, &store.TaskProgress{
 		Total: dto.Stats.Total, Downloaded: dto.Stats.Downloaded,
 		Failed: dto.Stats.Failed, Skipped: dto.Stats.Skipped,
 		TotalSize: dto.Stats.TotalSize, DownloadedSize: dto.Stats.DownloadedSize,

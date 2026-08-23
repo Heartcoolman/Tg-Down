@@ -91,7 +91,7 @@ func bootstrapHandler(target string) http.Handler {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>Tg-Down</title>
+		_, _ = fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>Tg-Down</title>
 <body style="font-family:system-ui;background:#f2f2f7;color:#333;text-align:center;padding-top:40vh">正在启动 Tg-Down…</body>
 <script>location.replace(%q)</script>`, target)
 	})

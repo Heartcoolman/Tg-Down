@@ -25,7 +25,7 @@ func (windowsAutostart) Enabled() (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("打开注册表 Run 键失败: %w", err)
 	}
-	defer k.Close()
+	defer func() { _ = k.Close() }()
 	v, _, err := k.GetStringValue(winValueName)
 	if err == registry.ErrNotExist {
 		return false, nil
@@ -49,7 +49,7 @@ func (windowsAutostart) Enable() error {
 	if err != nil {
 		return fmt.Errorf("打开注册表 Run 键失败: %w", err)
 	}
-	defer k.Close()
+	defer func() { _ = k.Close() }()
 	return k.SetStringValue(winValueName, `"`+exe+`"`)
 }
 
@@ -58,7 +58,7 @@ func (windowsAutostart) Disable() error {
 	if err != nil {
 		return fmt.Errorf("打开注册表 Run 键失败: %w", err)
 	}
-	defer k.Close()
+	defer func() { _ = k.Close() }()
 	err = k.DeleteValue(winValueName)
 	if err == registry.ErrNotExist {
 		return nil

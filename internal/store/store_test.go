@@ -87,7 +87,7 @@ func TestTaskCRUDRoundTrip(t *testing.T) {
 		t.Fatalf("started_at changed on re-run transition: got %v, want %v", got.StartedAt, firstStartedAt)
 	}
 
-	if err := s.UpdateTaskProgress(ctx, "task-1", TaskProgress{
+	if err := s.UpdateTaskProgress(ctx, "task-1", &TaskProgress{
 		Total: 10, Downloaded: 6, Failed: 2, Skipped: 2,
 		TotalSize: 1000, DownloadedSize: 600, ExpectedTotal: 50, ScanCursor: 12345, Attempts: 1,
 		RetryFailedOnly: true,

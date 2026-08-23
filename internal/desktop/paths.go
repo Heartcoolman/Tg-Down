@@ -42,7 +42,10 @@ func AppDir() (string, error) {
 			dir = filepath.Join(base, lowerName())
 		}
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// dir 只可能是平台标准目录，或开发者自己经 TG_DOWN_DESKTOP_DIR 指定的路径；
+	// 能设置本进程环境变量的一方已经控制了本进程，不构成越权路径。
+	//nolint:gosec // 路径来自本进程环境变量，非远程输入
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", fmt.Errorf("创建应用数据目录失败: %w", err)
 	}
 	if err := os.Chdir(dir); err != nil {
@@ -53,8 +56,8 @@ func AppDir() (string, error) {
 
 // LogsDir 返回日志目录（位于应用数据目录下），不存在则创建
 func LogsDir() (string, error) {
-	dir := filepath.Join("logs")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	const dir = "logs"
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", fmt.Errorf("创建日志目录失败: %w", err)
 	}
 	return filepath.Abs(dir)

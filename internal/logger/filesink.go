@@ -35,9 +35,10 @@ func newFileSink(path string, maxBytes int64, keep int) (*fileSink, error) {
 	if keep <= 0 {
 		keep = DefaultFileLogKeep
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("创建日志目录失败: %w", err)
 	}
+	//nolint:gosec // path 来自本地配置 log.file，非外部请求输入
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("打开日志文件失败: %w", err)

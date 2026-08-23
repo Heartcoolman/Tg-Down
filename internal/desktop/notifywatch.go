@@ -18,6 +18,9 @@ import (
 const (
 	initialReconnect = 2 * time.Second
 	maxReconnect     = time.Minute
+
+	sseInitBufBytes = 64 << 10 // SSE 行扫描的初始缓冲
+	sseMaxLineBytes = 1 << 20  // 单行上限，超过视为异常流
 )
 
 // TaskEvent 是 SSE task 事件载荷中本监视器关心的字段
@@ -59,7 +62,7 @@ func WatchTaskFailures(ctx context.Context, baseURL string, log *logger.Logger) 
 }
 
 func consumeEvents(ctx context.Context, client *http.Client, base string, log *logger.Logger) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/events", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/events", http.NoBody)
 	if err != nil {
 		return err
 	}
@@ -68,13 +71,13 @@ func consumeEvents(ctx context.Context, client *http.Client, base string, log *l
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	scanner.Buffer(make([]byte, 0, sseInitBufBytes), sseMaxLineBytes)
 	var event, data string
 	reset := func() { event, data = "", "" }
 	for scanner.Scan() {

@@ -385,6 +385,7 @@ func prepareDatabaseFiles(path string) error {
 	if path == "" || path == inMemoryDSN {
 		return nil
 	}
+	//nolint:gosec // path 来自本地配置 store.path，非外部请求输入
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, databaseFilePermission)
 	if err != nil {
 		return fmt.Errorf("准备数据库文件失败 (%s): %w", path, err)

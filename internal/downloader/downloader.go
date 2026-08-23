@@ -38,6 +38,9 @@ const (
 	// thumbsDirName 是缩略图缓存目录（位于下载根目录下）。
 	// 以点开头，与 .tdlib-files 一样不会混进用户的媒体目录里。
 	thumbsDirName = ".thumbs"
+
+	// parentDir 用于判断相对路径是否越出下载根目录
+	parentDir = ".."
 )
 
 // MediaInfo 媒体文件信息
@@ -948,7 +951,7 @@ func rejectSymlinkPath(base, target string) error {
 	if err != nil {
 		return err
 	}
-	if rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if rel == parentDir || filepath.IsAbs(rel) || strings.HasPrefix(rel, parentDir+string(filepath.Separator)) {
 		return fmt.Errorf("路径位于下载根目录之外: %s", target)
 	}
 	if rel == "." {
@@ -1311,8 +1314,8 @@ func (d *Downloader) isSafePath(filePath, basePath string) bool {
 		return false
 	}
 
-	return relPath != ".." && !filepath.IsAbs(relPath) &&
-		!strings.HasPrefix(relPath, ".."+string(filepath.Separator))
+	return relPath != parentDir && !filepath.IsAbs(relPath) &&
+		!strings.HasPrefix(relPath, parentDir+string(filepath.Separator))
 }
 
 // DownloadSingle 下载单个媒体文件（用于实时监控）

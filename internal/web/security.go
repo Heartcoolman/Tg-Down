@@ -21,10 +21,13 @@ const (
 	maxRequestBodyBytes = 1 << 20 // 1MB
 	// webTokenCookie 保存令牌引导后的会话凭据。Cookie 中存令牌摘要而非原文，
 	// HttpOnly + SameSite=Strict 使媒体与 SSE 可自动鉴权，同时不把令牌暴露给前端脚本。
-	webTokenCookie = "tg_down_web_auth"
+	webTokenCookie = "tg_down_web_auth" //nolint:gosec // Cookie 名称，不是凭据本身
 	// authCapabilityCookie 不含秘密，只让新版前端识别后端支持 HttpOnly Cookie 引导，
 	// 从而一次性迁移旧 localStorage 令牌。它必须可由 JavaScript 读取。
 	authCapabilityCookie = "tg_down_web_cookie_auth"
+
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
 )
 
 // contentSecurityPolicy 限制页面可加载的资源来源。
@@ -103,6 +106,9 @@ func (s *Server) withSecurity(next http.Handler) http.Handler {
 }
 
 func (s *Server) setAuthCapabilityCookie(w http.ResponseWriter, r *http.Request) {
+	// 不设 HttpOnly 是有意为之（见 authCapabilityCookie 注释）；Secure 按实际请求协议取值，
+	// 静态检查读不出动态值。
+	//nolint:gosec // 无秘密内容，需前端脚本可读
 	http.SetCookie(w, &http.Cookie{
 		Name:     authCapabilityCookie,
 		Value:    "1",
@@ -119,6 +125,7 @@ func isAPIPath(path string) bool {
 
 // bootstrapTokenCookie 把地址栏中的令牌换成会话 Cookie，并从跳转地址移除 token。
 func (s *Server) bootstrapTokenCookie(w http.ResponseWriter, r *http.Request) {
+	//nolint:gosec // Secure 取自 requestIsHTTPS，静态检查读不出动态值
 	http.SetCookie(w, &http.Cookie{
 		Name:     webTokenCookie,
 		Value:    tokenCookieValue(s.token),
@@ -139,6 +146,9 @@ func redirectWithoutToken(w http.ResponseWriter, r *http.Request) {
 	if encoded := q.Encode(); encoded != "" {
 		target += "?" + encoded
 	}
+	// target 由 localRedirectPath 规范化为恰好一个前导斜杠、且不含反斜杠的站内路径，
+	// 查询串经 url.Values.Encode 转义，不存在跳到外站的取值。
+	//nolint:gosec // 已规范化为站内绝对路径
 	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
@@ -198,12 +208,12 @@ func (s *Server) originAllowed(origin string, r *http.Request) bool {
 	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 		return false
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
+	if u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS {
 		return false
 	}
-	wantScheme := "http"
+	wantScheme := schemeHTTP
 	if s.requestIsHTTPS(r) {
-		wantScheme = "https"
+		wantScheme = schemeHTTPS
 	}
 	return u.Scheme == wantScheme && strings.EqualFold(u.Host, r.Host)
 }

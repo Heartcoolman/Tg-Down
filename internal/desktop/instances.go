@@ -40,7 +40,7 @@ type Registry struct {
 // OpenRegistry 从 path 加载注册表；文件不存在时返回空表
 func OpenRegistry(path string) (*Registry, error) {
 	r := &Registry{path: path}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path 由应用数据目录拼出，非用户输入
 	if os.IsNotExist(err) {
 		r.data.Selected = LocalInstanceID
 		return r, nil

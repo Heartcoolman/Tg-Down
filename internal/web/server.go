@@ -189,9 +189,9 @@ func (s *Server) newHTTPServer() *http.Server {
 }
 
 // prepare 启动后台组件（Telegram 连接循环、状态快照、任务队列、关闭监视）。
-// 返回派生上下文、资源释放函数与等待全部后台退出的函数；serve 返回后必须先 stop 再 wait，
+// 返回资源释放函数与等待全部后台退出的函数；serve 返回后必须先 stop 再 wait，
 // 否则关闭监视 goroutine 会因 runCtx 未取消而永久阻塞。
-func (s *Server) prepare(ctx context.Context, srv *http.Server) (context.Context, func(), func()) {
+func (s *Server) prepare(ctx context.Context, srv *http.Server) (stop, wait func()) {
 	runCtx, stop := context.WithCancel(ctx)
 	s.baseCtx = runCtx
 	s.logger.SetHook(s.onLog)
@@ -209,7 +209,8 @@ func (s *Server) prepare(ctx context.Context, srv *http.Server) (context.Context
 	startBackground(func() { s.snapshotLoop(runCtx) })
 	startBackground(func() { s.queue.Run(runCtx) })
 
-	startBackground(func() { //nolint:gosec // 父 ctx 已取消，关闭需独立超时窗口
+	// 父 ctx 已取消，关闭需独立超时窗口
+	startBackground(func() {
 		<-runCtx.Done()
 		// 运行中任务的 ctx 派生自同一个 ctx，取消已沿调用链自动传播，
 		// 此处无需再显式遍历取消。
@@ -217,11 +218,11 @@ func (s *Server) prepare(ctx context.Context, srv *http.Server) (context.Context
 		defer cancel()
 		_ = srv.Shutdown(shutCtx)
 	})
-	return runCtx, stop, background.Wait
+	return stop, background.Wait
 }
 
 // finish 收尾：释放上下文资源、撤销日志钩子、等待后台退出并归一化错误
-func (s *Server) finish(serveErr error, stop func(), wait func()) error {
+func (s *Server) finish(serveErr error, stop, wait func()) error {
 	stop()
 	s.logger.SetHook(nil)
 	wait()
@@ -238,7 +239,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		return err
 	}
 	srv := s.newHTTPServer()
-	_, stop, wait := s.prepare(ctx, srv)
+	stop, wait := s.prepare(ctx, srv)
 	s.logger.Info("Web 管理端已启动: http://%s", ln.Addr().String())
 	err := srv.Serve(ln)
 	return s.finish(err, stop, wait)
@@ -250,7 +251,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 	srv := s.newHTTPServer()
-	_, stop, wait := s.prepare(ctx, srv)
+	stop, wait := s.prepare(ctx, srv)
 
 	if !isLoopbackAddr(s.addr) {
 		s.logger.Info("Web 端监听非本地地址 %s，已启用访问令牌鉴权", s.addr)
@@ -260,7 +261,8 @@ func (s *Server) Run(ctx context.Context) error {
 	serve := s.serveHTTP
 	if serve == nil {
 		serve = func(server *http.Server) error {
-			ln, err := net.Listen("tcp", server.Addr)
+			var lc net.ListenConfig
+			ln, err := lc.Listen(ctx, "tcp", server.Addr)
 			if err != nil {
 				return err
 			}
@@ -272,111 +274,150 @@ func (s *Server) Run(ctx context.Context) error {
 	return s.finish(err, stop, wait)
 }
 
+// authLoop 承载 runTelegram 的循环状态：重连退避时长，以及本轮是否占用了凭据提交槽位。
+// 槽位必须在每次认证结束后释放，否则 Web 端的下一次提交会被一直挡住。
+type authLoop struct {
+	s          *Server
+	delay      time.Duration
+	submission bool
+}
+
+func (l *authLoop) markSubmission() {
+	l.submission = true
+	l.delay = initialReconnectDelay
+}
+
+func (l *authLoop) releaseSubmission() {
+	if l.submission {
+		l.s.releaseCredentialSubmission()
+		l.submission = false
+	}
+}
+
+// awaitCredentials 在凭据缺失时阻塞等待 Web 端提交 API ID/Hash/手机号；
+// 已有凭据时以非阻塞方式消费可能刚入队的信号，确保槽位会在本轮认证后释放。
+// 返回 false 表示 ctx 已取消。
+func (l *authLoop) awaitCredentials(ctx context.Context) bool {
+	if l.s.client.HasCredentials() {
+		if !l.submission {
+			select {
+			case <-l.s.credCh:
+				l.markSubmission()
+			default:
+			}
+		}
+		return true
+	}
+	l.s.setState(StateNeedCredentials)
+	select {
+	case <-l.s.credCh:
+		l.markSubmission()
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// handleAuthFailure 处理一次认证失败：errAuthAborted 表示用户返回上一步，清理会话后立即重试；
+// 其余错误进入退避等待，期间重新提交凭据则立即重试。返回 false 表示 ctx 已取消。
+func (l *authLoop) handleAuthFailure(ctx context.Context, err error) bool {
+	if errors.Is(err, errAuthAborted) {
+		l.s.clearAbortedSession()
+		l.releaseSubmission()
+		l.delay = initialReconnectDelay
+		return true
+	}
+	l.s.setError(err)
+	l.s.logger.Error("Telegram 连接失败，%s 后重试: %v", l.delay, err)
+	l.releaseSubmission()
+	select {
+	case <-time.After(l.delay):
+		l.delay = min(l.delay*reconnectFactor, maxReconnectDelay)
+	case <-l.s.credCh:
+		l.markSubmission()
+	case <-ctx.Done():
+		return false
+	}
+	return true
+}
+
+// awaitSessionEnd 就绪后阻塞至退出登录或 ctx 取消。返回 false 表示 ctx 已取消。
+func (l *authLoop) awaitSessionEnd(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-l.s.logoutCh:
+		// 会话已在 handleAuthLogout 中销毁，清空聊天缓存后重新进入认证循环
+		l.s.mu.Lock()
+		l.s.chats = nil
+		l.s.mu.Unlock()
+		l.delay = initialReconnectDelay
+		return true
+	}
+}
+
+// clearAbortedSession 清理未完成的登录会话与手机号，让界面回到凭据输入页
+func (s *Server) clearAbortedSession() {
+	if err := s.client.ClearSession(); err != nil {
+		s.logger.Warn("清理登录会话失败: %v", err)
+	}
+	if err := s.client.ClearPhone(); err != nil {
+		s.logger.Warn("清除手机号失败: %v", err)
+	}
+}
+
+// resumeQueue 认证成功后恢复处于排空状态的任务队列。返回 false 表示恢复失败，需重新认证。
+func (s *Server) resumeQueue() bool {
+	if !s.queueDraining.Load() {
+		return true
+	}
+	if err := s.queue.EndDrain(); err != nil {
+		s.setError(err)
+		s.logger.Error("恢复任务队列失败: %v", err)
+		return false
+	}
+	s.queueDraining.Store(false)
+	return true
+}
+
 // runTelegram 连接并认证 Telegram；TDLib 在授权后自行维持/重连，
 // 故仅在初始连接失败时退避重试。验证码/密码经 webCode/webPassword 注入。
 func (s *Server) runTelegram(ctx context.Context) {
-	delay := initialReconnectDelay
-	credentialSubmission := false
-	defer func() {
-		if credentialSubmission {
-			s.releaseCredentialSubmission()
-		}
-	}()
+	l := &authLoop{s: s, delay: initialReconnectDelay}
+	defer l.releaseSubmission()
 	for {
-		// 凭据缺失时，等待 Web 端提交 API ID/Hash/手机号
-		if !s.client.HasCredentials() {
-			s.setState(StateNeedCredentials)
-			select {
-			case <-s.credCh:
-				credentialSubmission = true
-				delay = initialReconnectDelay
-			case <-ctx.Done():
-				s.client.Close()
-				return
-			}
-		} else if !credentialSubmission {
-			// 凭据可能刚好在重试计时结束后入队；先消费信号，确保槽位会在本轮认证后释放。
-			select {
-			case <-s.credCh:
-				credentialSubmission = true
-				delay = initialReconnectDelay
-			default:
-			}
+		if !l.awaitCredentials(ctx) {
+			s.client.Close()
+			return
 		}
 
 		s.drainAuthSignals()
 		s.setState(StateConnecting)
 		err := s.client.AuthenticateWith(ctx, s.webCode, s.webPassword)
 		if ctx.Err() != nil {
-			if credentialSubmission {
-				s.releaseCredentialSubmission()
-				credentialSubmission = false
-			}
+			l.releaseSubmission()
 			s.client.Close()
 			return
 		}
 		if err != nil {
-			if errors.Is(err, errAuthAborted) {
-				// 用户返回上一步：清理未完成的登录会话与手机号，回到凭据输入页
-				if cerr := s.client.ClearSession(); cerr != nil {
-					s.logger.Warn("清理登录会话失败: %v", cerr)
-				}
-				if perr := s.client.ClearPhone(); perr != nil {
-					s.logger.Warn("清除手机号失败: %v", perr)
-				}
-				if credentialSubmission {
-					s.releaseCredentialSubmission()
-					credentialSubmission = false
-				}
-				delay = initialReconnectDelay
-				continue
-			}
-			s.setError(err)
-			s.logger.Error("Telegram 连接失败，%s 后重试: %v", delay, err)
-			if credentialSubmission {
-				s.releaseCredentialSubmission()
-				credentialSubmission = false
-			}
-			// 退避等待；若用户期间重新提交凭据则立即重试
-			select {
-			case <-time.After(delay):
-				delay = min(delay*reconnectFactor, maxReconnectDelay)
-			case <-s.credCh:
-				credentialSubmission = true
-				delay = initialReconnectDelay
-			case <-ctx.Done():
+			if !l.handleAuthFailure(ctx, err) {
 				s.client.Close()
 				return
 			}
 			continue
 		}
-		if credentialSubmission {
-			s.releaseCredentialSubmission()
-			credentialSubmission = false
-		}
-		if s.queueDraining.Load() {
-			if err := s.queue.EndDrain(); err != nil {
-				s.setError(err)
-				s.logger.Error("恢复任务队列失败: %v", err)
-				continue
-			}
-			s.queueDraining.Store(false)
+		l.releaseSubmission()
+		if !s.resumeQueue() {
+			continue
 		}
 
 		s.setState(StateReady)
 		s.logger.Info("Telegram 已连接，Web 端就绪")
 		s.refreshChats(ctx)
 
-		select {
-		case <-ctx.Done():
+		if !l.awaitSessionEnd(ctx) {
 			s.client.Close()
 			return
-		case <-s.logoutCh:
-			// 会话已在 handleAuthLogout 中销毁，清空聊天缓存后重新进入认证循环
-			s.mu.Lock()
-			s.chats = nil
-			s.mu.Unlock()
-			delay = initialReconnectDelay
 		}
 	}
 }

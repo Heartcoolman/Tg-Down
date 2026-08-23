@@ -91,9 +91,10 @@ func run(enableTray bool) error {
 // --- 引擎托管 ---
 
 type engineHandle struct {
-	base   string
-	srv    *web.Server
-	client *telegram.Client //nolint:unused // 持引用防止 GC；连接关闭由 web.Server 在 ctx 路径完成
+	base string
+	srv  *web.Server
+	// client 持引用防止 GC；连接关闭由 web.Server 在 ctx 路径完成
+	client *telegram.Client
 	st     *store.Store
 	done   chan struct{}
 	log    *logger.Logger
@@ -121,17 +122,16 @@ func startEngine(ctx context.Context) (*engineHandle, error) {
 		return nil, fmt.Errorf("加载配置失败: %w", err)
 	}
 	log := logger.New(cfg.Log.Level)
-	switch {
-	case cfg.Log.File == "":
-		// 桌面端默认开启文件日志（应用数据目录 logs/tg-down.log），便于排查崩溃；
-		// 用户显式配置过 log.file 则走下一分支尊重原值
+	// 桌面端默认开启文件日志（应用数据目录 logs/tg-down.log），便于排查崩溃；
+	// 用户显式配置过 log.file 则尊重原值
+	logFile := cfg.Log.File
+	if logFile == "" {
 		if logsDir, lerr := desktop.LogsDir(); lerr == nil {
-			if serr := log.SetFileSink(logsDir+"/tg-down.log", logger.DefaultFileLogMaxBytes, logger.DefaultFileLogKeep); serr != nil {
-				log.Warn("日志文件不可用，仅输出到控制台: %v", serr)
-			}
+			logFile = logsDir + "/tg-down.log"
 		}
-	default:
-		if serr := log.SetFileSink(cfg.Log.File, logger.DefaultFileLogMaxBytes, logger.DefaultFileLogKeep); serr != nil {
+	}
+	if logFile != "" {
+		if serr := log.SetFileSink(logFile, logger.DefaultFileLogMaxBytes, logger.DefaultFileLogKeep); serr != nil {
 			log.Warn("日志文件不可用，仅输出到控制台: %v", serr)
 		}
 	}
@@ -147,7 +147,8 @@ func startEngine(ctx context.Context) (*engineHandle, error) {
 	}
 	srv := web.New(client, st, log, "127.0.0.1:0", cfg)
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		_ = st.Close()
 		return nil, fmt.Errorf("绑定引擎端口失败: %w", err)

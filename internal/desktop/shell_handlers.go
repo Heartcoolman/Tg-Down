@@ -14,6 +14,19 @@ import (
 	"tg-down/internal/web"
 )
 
+const (
+	// JSON 响应中的重复键名
+	keySelected = "selected"
+	keyEnabled  = "enabled"
+	statusOK    = "ok"
+	keyStatus   = "status"
+
+	probeTimeout       = 6 * time.Second
+	probeClientTimeout = 8 * time.Second
+	probeErrBodyLimit  = 512      // 探测失败时回显的错误正文上限
+	probeBodyLimit     = 64 << 10 // 探测响应 JSON 的解析上限
+)
+
 func goOS() string   { return runtime.GOOS }
 func goArch() string { return runtime.GOARCH }
 
@@ -48,7 +61,7 @@ func (s *Shell) handleList(w http.ResponseWriter, _ *http.Request) {
 	for i, in := range list {
 		dtos[i] = instanceDTO{ID: in.ID, Name: in.Name, URL: in.URL, HasToken: in.Token != ""}
 	}
-	writeJSON(w, map[string]any{"selected": s.reg.Selected(), "instances": dtos})
+	writeJSON(w, map[string]any{keySelected: s.reg.Selected(), "instances": dtos})
 }
 
 // instanceDTO 不携带 Token 原文；前端只见 has_token
@@ -98,7 +111,7 @@ func (s *Shell) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	writeJSON(w, map[string]string{"status": "ok"})
+	writeJSON(w, map[string]string{keyStatus: statusOK})
 }
 
 func (s *Shell) handleSelect(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +125,7 @@ func (s *Shell) handleSelect(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	writeJSON(w, map[string]string{"status": "ok", "selected": body.ID})
+	writeJSON(w, map[string]string{keyStatus: statusOK, keySelected: body.ID})
 }
 
 // handleTest 对实例发一次带鉴权的 /api/state 探测，返回连通性与版本信息
@@ -124,7 +137,7 @@ func (s *Shell) handleTest(w http.ResponseWriter, r *http.Request) {
 		State   string `json:"state,omitempty"`
 		Error   string `json:"error,omitempty"`
 	}
-	state, err := probeInstance(s.reg, id, r.Context())
+	state, err := probeInstance(r.Context(), s.reg, id)
 	if err != nil {
 		result.Error = err.Error()
 	} else {
@@ -141,14 +154,14 @@ type probedState struct {
 	State   web.State `json:"state"`
 }
 
-func probeInstance(reg *Registry, id string, parent context.Context) (*probedState, error) {
+func probeInstance(parent context.Context, reg *Registry, id string) (*probedState, error) {
 	in, ok := reg.Get(id)
 	if !ok {
 		return nil, errors.New("实例不存在")
 	}
-	ctx, cancel := context.WithTimeout(parent, 6*time.Second)
+	ctx, cancel := context.WithTimeout(parent, probeTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(in.URL, "/")+"/api/state", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(in.URL, "/")+"/api/state", http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -159,22 +172,22 @@ func probeInstance(reg *Registry, id string, parent context.Context) (*probedSta
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, errors.New("鉴权失败：令牌缺失或不正确")
 	}
 	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, probeErrBodyLimit))
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(data))
 	}
 	var st probedState
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&st); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, probeBodyLimit)).Decode(&st); err != nil {
 		return nil, fmt.Errorf("响应解析失败: %w", err)
 	}
 	return &st, nil
 }
 
-var probeClient = &http.Client{Timeout: 8 * time.Second} //nolint:govet // 共享客户端无敏感状态
+var probeClient = &http.Client{Timeout: probeClientTimeout}
 
 func (s *Shell) handleAutostartGet(w http.ResponseWriter, _ *http.Request) {
 	enabled, err := s.autostart.Enabled()
@@ -182,7 +195,7 @@ func (s *Shell) handleAutostartGet(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, map[string]bool{"enabled": enabled})
+	writeJSON(w, map[string]bool{keyEnabled: enabled})
 }
 
 func (s *Shell) handleAutostartSet(w http.ResponseWriter, r *http.Request) {
@@ -202,7 +215,7 @@ func (s *Shell) handleAutostartSet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, map[string]bool{"enabled": body.Enabled})
+	writeJSON(w, map[string]bool{keyEnabled: body.Enabled})
 }
 
 func deref(p *string) string {

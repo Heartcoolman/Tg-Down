@@ -31,7 +31,7 @@ func (linuxAutostart) Enabled() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	data, err := os.ReadFile(p)
+	data, err := os.ReadFile(p) //nolint:gosec // p 由 entryPath 从用户配置目录拼出，非外部输入
 	if os.IsNotExist(err) {
 		return false, nil
 	}
@@ -54,7 +54,7 @@ func (linuxAutostart) Enable() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
 		return fmt.Errorf("创建 autostart 目录失败: %w", err)
 	}
 	content := `[Desktop Entry]
@@ -65,7 +65,7 @@ Terminal=false
 X-GNOME-Autostart-enabled=true
 Categories=Network;
 `
-	return os.WriteFile(p, []byte(content), 0o644)
+	return os.WriteFile(p, []byte(content), 0o600)
 }
 
 func (linuxAutostart) Disable() error {

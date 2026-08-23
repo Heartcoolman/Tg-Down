@@ -45,6 +45,12 @@ linters:
             - github.com/joho/godotenv
             - gopkg.in/yaml.v3
             - modernc.org/sqlite
+            - golang.org/x/term
+            - golang.org/x/sys/windows/registry
+            # v3.1 桌面客户端依赖：Wails 壳、托盘、系统通知
+            - github.com/wailsapp/wails/v2
+            - github.com/energye/systray
+            - github.com/gen2brain/beeep
             - tg-down/internal/config
             - tg-down/internal/logger
             - tg-down/internal/telegram
@@ -56,6 +62,7 @@ linters:
             - tg-down/internal/queue
             - tg-down/internal/notify
             - tg-down/internal/tgapi
+            - tg-down/internal/desktop
     dupl:
       threshold: 100
     goconst:
@@ -100,6 +107,9 @@ linters:
         - "100"
         - "1000"
         - "1024"
+        # 文件/目录权限位：写成八进制字面量比命名常量更易读，且 gosec 已单独把关取值范围
+        - "0o600"
+        - "0o750"
       ignored-functions:
         - time.Sleep
         - time.Duration
@@ -117,6 +127,12 @@ linters:
       - linters:
           - gochecknoinits
         path: cmd/
+      # scripts/ 是构建期代码生成器，不进发布产物：图形坐标与 ICO 头字段是设计稿常量，
+      # 命名后反而更难核对；路径全部来自本机命令行 flag，不存在外部输入。
+      - linters:
+          - gosec
+          - mnd
+        path: ^scripts/
       - linters:
           - unparam
         text: parameter .* seems to be unused

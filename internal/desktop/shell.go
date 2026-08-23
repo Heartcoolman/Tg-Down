@@ -40,7 +40,8 @@ func NewShell(reg *Registry, engineBase, appDir, version string, a Autostart) *S
 
 // Start 绑定 127.0.0.1 随机端口并在后台开始服务；返回可导航给 WebView 的根地址
 func (s *Shell) Start(ctx context.Context) (string, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", fmt.Errorf("绑定壳监听端口失败: %w", err)
 	}
@@ -84,10 +85,10 @@ func (s *Shell) Start(ctx context.Context) (string, error) {
 		// 不设 ReadTimeout/WriteTimeout：SSE 与媒体流为长连接
 	}
 	go func() {
-		_ = s.srv.Serve(ln) //nolint:gosec // ctx 取消时经 Shutdown 收尾
+		// ctx 取消时经 Shutdown 收尾
+		_ = s.srv.Serve(ln)
 	}()
 	s.baseURL = "http://" + ln.Addr().String()
-	_ = ctx
 	return s.baseURL, nil
 }
 
@@ -127,6 +128,9 @@ func localEngineProxy(target *url.URL) http.Handler {
 const (
 	readHeaderTimeout = 10 * time.Second
 	shutdownWait      = 3 * time.Second
+
+	// maxRequestBodyBytes 限制壳层 API 的请求体大小
+	maxRequestBodyBytes = 64 << 10
 )
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -142,7 +146,7 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 
 func decodeBody[T any](w http.ResponseWriter, r *http.Request) (T, bool) {
 	var body T
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
 	if err := dec.Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
 		return body, false

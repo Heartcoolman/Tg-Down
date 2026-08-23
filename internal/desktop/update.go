@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -25,7 +26,9 @@ type Release struct {
 // CheckUpdate 查询 GitHub 最新 release；current 为当前版本（dev 视为 0.0.0）
 func CheckUpdate(current string) (*Release, error) {
 	client := &http.Client{Timeout: updateHTTPTimeout}
-	req, err := http.NewRequest(http.MethodGet, ReleasesAPI, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), updateHTTPTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ReleasesAPI, http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +37,7 @@ func CheckUpdate(current string) (*Release, error) {
 	if err != nil {
 		return nil, fmt.Errorf("查询更新失败: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("查询更新失败: HTTP %d", resp.StatusCode)
 	}

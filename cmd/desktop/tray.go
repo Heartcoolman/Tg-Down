@@ -59,7 +59,7 @@ func (a *uiApp) onTrayReady(autostart desktop.Autostart) {
 // enginePost 调用本地引擎的控制端点（回环无鉴权）
 func (a *uiApp) enginePost(path string) {
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(a.engineBase+path, "application/json", bytes.NewReader(nil)) //nolint:gosec,noctx // 固定拼接的回环地址
+	resp, err := client.Post(a.engineBase+path, "application/json", bytes.NewReader(nil)) //nolint:noctx // 固定拼接的回环地址
 	if err != nil {
 		return
 	}

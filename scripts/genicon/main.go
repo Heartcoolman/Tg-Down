@@ -119,8 +119,11 @@ func writePNG(path string, img image.Image) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	return png.Encode(f, img)
+	if err := png.Encode(f, img); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // writeICO 写多尺寸 ICO：目录项直接内嵌 PNG 数据（Vista+ 支持）。

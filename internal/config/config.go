@@ -47,6 +47,11 @@ const (
 	FloatBitSize = 64
 	// MaxTelegramAPIID 是 TDLib int32 字段可接受的最大 API ID。
 	MaxTelegramAPIID = 1<<31 - 1
+	// apiHashLength 是 Telegram API Hash 的十六进制字符数。
+	apiHashLength = 32
+
+	// osWindows 用于 runtime.GOOS 比较：Windows 无 POSIX 权限位，权限收紧逻辑需跳过。
+	osWindows = "windows"
 )
 
 // Config 应用配置结构
@@ -198,7 +203,7 @@ func load(requireAPI bool) (*Config, error) {
 }
 
 func loadDotEnv() error {
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != osWindows {
 		info, err := os.Stat(".env")
 		if err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o077 != 0 {
 			if err := os.Chmod(".env", FilePermission); err != nil {
@@ -255,12 +260,12 @@ func IsValidAPIID(apiID int64) bool {
 
 // IsValidAPIHash 报告 API Hash 是否为 Telegram 要求的 32 位十六进制字符串。
 func IsValidAPIHash(hash string) bool {
-	if len(hash) != 32 {
+	if len(hash) != apiHashLength {
 		return false
 	}
 	for i := range len(hash) {
 		c := hash[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
 			return false
 		}
 	}
@@ -298,7 +303,7 @@ func loadFromYAML(config *Config) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("配置文件 config.yaml 不是普通文件")
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+	if runtime.GOOS != osWindows && info.Mode().Perm()&0o077 != 0 {
 		if err := f.Chmod(FilePermission); err != nil {
 			return fmt.Errorf("收紧配置文件权限失败: %w", err)
 		}
@@ -594,13 +599,13 @@ func validateConfig(config *Config) error {
 	return nil
 }
 
-// SaveConfig 保存配置到文件。设置 TG_DOWN_NO_CONFIG_WRITE 环境变量时跳过写入
-// （容器等纯环境变量部署场景，配置由 env 提供，不应写回 config.yaml）。
 // saveConfigMu 串行化并发 SaveConfig：unix 上 rename 原子替换让并发写"碰巧"安全
 // （last-write-wins），Windows 的 MoveFileEx 替换被占用目标会因共享冲突瞬时失败。
 // 单进程内加互斥锁即获得全平台确定性行为。
 var saveConfigMu sync.Mutex
 
+// SaveConfig 保存配置到文件。设置 TG_DOWN_NO_CONFIG_WRITE 环境变量时跳过写入
+// （容器等纯环境变量部署场景，配置由 env 提供，不应写回 config.yaml）。
 func (c *Config) SaveConfig(filename string) error {
 	saveConfigMu.Lock()
 	defer saveConfigMu.Unlock()

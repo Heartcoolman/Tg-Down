@@ -260,6 +260,7 @@ func reserveExportFiles(dir, prefix string) (
 		}
 		jsonPath = jsonFile.Name()
 		htmlPath = strings.TrimSuffix(jsonPath, ".json") + ".html"
+		//nolint:gosec // htmlPath 由已创建的 jsonPath 派生，始终落在导出目录内
 		htmlFile, err = os.OpenFile(htmlPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, exportFilePerm)
 		if err == nil {
 			return jsonFile, htmlFile, jsonPath, htmlPath, nil

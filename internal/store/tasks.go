@@ -88,7 +88,7 @@ type TaskProgress struct {
 }
 
 // UpdateTaskProgress 更新任务的进度统计与扫描游标
-func (s *Store) UpdateTaskProgress(ctx context.Context, id string, p TaskProgress) error {
+func (s *Store) UpdateTaskProgress(ctx context.Context, id string, p *TaskProgress) error {
 	const q = `
 UPDATE tasks SET total = ?, downloaded = ?, failed = ?, skipped = ?, total_size = ?, downloaded_size = ?,
 	  expected_total = ?, scan_cursor = ?, attempts = ?, retry_failed_only = ?

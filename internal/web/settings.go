@@ -81,43 +81,46 @@ func (s *Server) settingsSnapshot() settingsDTO {
 	}
 }
 
-// handleSettingsUpdate 应用设置页提交的变更。能热应用的立即生效（分类/并发/元数据/日志级别/
-// 完成通知），只能影响后续运行的（代理、任务并发、自动重试）写回配置并附重启提示。
-func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
-	var body updateSettingsRequest
-	if !s.decode(w, r, &body) {
-		return
-	}
-	cfg := s.cfg
+// applyHotSettings 应用能立即生效的设置（分类存储、下载并发、元数据 sidecar）。
+// 返回提示语；第二个返回值为 false 表示已写出错误响应，调用方须直接返回。
+func (s *Server) applyHotSettings(w http.ResponseWriter, body *updateSettingsRequest) ([]string, bool) {
 	var notices []string
-	persist := false
-
 	if body.ClassifyByType != nil {
 		if err := s.client.SetClassifyByType(*body.ClassifyByType); err != nil {
 			s.writeError(w, http.StatusInternalServerError, err.Error())
-			return
+			return nil, false
 		}
 		s.logger.Info("按媒体类型分类存储已%s", onOff(*body.ClassifyByType))
 	}
 	if body.MaxConcurrent != nil {
 		if !s.applyConcurrency(*body.MaxConcurrent, w) {
-			return
+			return nil, false
 		}
 	}
 	if body.SaveMetadata != nil {
 		if err := s.client.SetSaveMetadata(*body.SaveMetadata); err != nil {
 			s.writeError(w, http.StatusInternalServerError, err.Error())
-			return
+			return nil, false
 		}
 		s.logger.Info("元数据 sidecar 已%s", onOff(*body.SaveMetadata))
 		notices = append(notices, "元数据设置对后续下载生效")
 	}
+	return notices, true
+}
+
+// applyConfigSettings 写回只影响后续运行的设置（代理、任务并发、自动重试、日志级别、完成通知）。
+// 返回提示语与"是否有配置需要落盘"；第三个返回值为 false 表示已写出错误响应。
+func (s *Server) applyConfigSettings(
+	w http.ResponseWriter, body *updateSettingsRequest,
+) (notices []string, persist, ok bool) {
+	cfg := s.cfg
+
 	if body.Proxy != nil {
 		v := strings.TrimSpace(*body.Proxy)
 		if !config.IsValidProxy(v) {
 			s.writeError(w, http.StatusBadRequest,
 				"代理地址无效：支持 socks5://、http://（CONNECT）、mtproto:// 或 direct/off/none")
-			return
+			return nil, false, false
 		}
 		cfg.Telegram.Proxy = v
 		persist = true
@@ -130,7 +133,7 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 	if body.TaskConcurrency != nil {
 		if *body.TaskConcurrency <= 0 {
 			s.writeError(w, http.StatusBadRequest, "任务并发数必须大于 0")
-			return
+			return nil, false, false
 		}
 		cfg.Queue.MaxConcurrentTasks = *body.TaskConcurrency
 		persist = true
@@ -139,7 +142,7 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 	if body.AutoRetry != nil {
 		if *body.AutoRetry < 0 {
 			s.writeError(w, http.StatusBadRequest, "自动重试次数不能为负（0 为关闭）")
-			return
+			return nil, false, false
 		}
 		n := *body.AutoRetry
 		cfg.Queue.AutoRetry = &n
@@ -152,7 +155,7 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 		case logger.LevelDebug, logger.LevelInfo, logger.LevelWarn, logger.LevelError:
 		default:
 			s.writeError(w, http.StatusBadRequest, "日志级别必须是 debug/info/warn/error")
-			return
+			return nil, false, false
 		}
 		s.logger.SetLevel(level)
 		cfg.Log.Level = level
@@ -169,9 +172,28 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 		s.rebuildNotifier()
 		notices = append(notices, "完成通知设置对后续完成的任务生效")
 	}
+	return notices, persist, true
+}
+
+// handleSettingsUpdate 应用设置页提交的变更。能热应用的立即生效（分类/并发/元数据/日志级别/
+// 完成通知），只能影响后续运行的（代理、任务并发、自动重试）写回配置并附重启提示。
+func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
+	var body updateSettingsRequest
+	if !s.decode(w, r, &body) {
+		return
+	}
+	notices, ok := s.applyHotSettings(w, &body)
+	if !ok {
+		return
+	}
+	configNotices, persist, ok := s.applyConfigSettings(w, &body)
+	if !ok {
+		return
+	}
+	notices = append(notices, configNotices...)
 
 	if persist {
-		if err := cfg.SaveConfig("config.yaml"); err != nil {
+		if err := s.cfg.SaveConfig("config.yaml"); err != nil {
 			s.logger.Warn("保存配置失败（当前会话内已应用）: %v", err)
 			notices = append(notices, "设置已在本次运行中生效，但写入 config.yaml 失败")
 		}
