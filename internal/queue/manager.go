@@ -1136,6 +1136,11 @@ func (m *Manager) createTaskRow(t *task) error {
 
 // persist 将任务当前状态与统计快照写入 store；写入失败仅记录日志，不影响内存中的任务状态
 func (m *Manager) persist(t *task) {
+	// 快照与两条 UPDATE 必须对同一任务原子完成。否则周期性 persistRunning 取到的
+	// running 快照可能后于任务终结时写入的 queued/completed 落库，把任务在库里退回
+	// running：重启后 loadTasks 会把它当成"中断的任务"重跑一遍。
+	t.persistMu.Lock()
+	defer t.persistMu.Unlock()
 	dto := t.ToDTO()
 	ctx := context.Background()
 	if err := m.store.UpdateTaskStatus(ctx, dto.ID, dto.Status, dto.Error); err != nil {

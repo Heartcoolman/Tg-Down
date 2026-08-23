@@ -30,6 +30,11 @@ type task struct {
 	createdAt time.Time
 	done      chan struct{} // 任务终结时关闭（经 markDone），monitor 切换时用于等待旧任务停止
 
+	// persistMu 串行化同一任务的落盘：Manager.persist 先取快照再发两条 UPDATE，
+	// 若两次 persist 交错，先取到的旧快照可能后写入而覆盖新状态。它只保护"取快照 +
+	// 写库"这段过程，与保护字段本身的 mu 是两把锁，不可合并（persist 期间不持有 mu）。
+	persistMu sync.Mutex
+
 	mu            sync.Mutex
 	doneClosed    bool // 与 done 一起受 mu 保护；部分重试会安装一个全新的完成通道
 	status        Status
