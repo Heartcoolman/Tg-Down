@@ -118,6 +118,49 @@ func TestPlanMediaPath_ChatTitleFallsBackToID(t *testing.T) {
 	}
 }
 
+// TestPlanMediaPath_ChatTitleAsTopDir 校验纯标题模板（不含 {chat_id}）：
+// 顶层目录即群聊名；标题缺失时回退 chat_<id>，聊天隔离不塌。
+func TestPlanMediaPath_ChatTitleAsTopDir(t *testing.T) {
+	root := t.TempDir()
+	d := New(root, 1, nil)
+	d.SetClassifyByType(true)
+	d.SetPathTemplate("{chat_title}/{type}/{album}/{name}")
+
+	// 有标题：顶层目录 = 群聊名
+	_, _, got := d.planMediaPath(&MediaInfo{
+		ChatID: -100123, ChatTitle: "我的频道", MediaType: mediapkg.Photo,
+		FileName: "photo_-100123_42.jpg",
+	})
+	want := filepath.Join(root, "我的频道", "photo", "photo_-100123_42.jpg")
+	if got != want {
+		t.Errorf("落盘路径 = %q\n期望         = %q", got, want)
+	}
+
+	// 标题缺失：回退 chat_<id>，不同聊天的文件仍互不混淆
+	d2 := New(root, 1, nil)
+	d2.SetClassifyByType(true)
+	d2.SetPathTemplate("{chat_title}/{type}/{name}")
+
+	_, _, gotNoTitle := d2.planMediaPath(&MediaInfo{
+		ChatID: -100123, MediaType: mediapkg.Photo, FileName: "p.jpg", MessageID: 9,
+	})
+	wantNoTitle := filepath.Join(root, "chat_-100123", "photo", "p.jpg")
+	if gotNoTitle != wantNoTitle {
+		t.Errorf("空标题回退路径 = %q\n期望           = %q", gotNoTitle, wantNoTitle)
+	}
+
+	// 两个不同聊天即使都没有标题，也落到各自目录
+	d3 := New(root, 1, nil)
+	d3.SetClassifyByType(true)
+	d3.SetPathTemplate("{chat_title}/{type}/{name}")
+
+	_, _, gotA := d3.planMediaPath(&MediaInfo{ChatID: 1, MediaType: mediapkg.Photo, FileName: "a.jpg", MessageID: 1})
+	_, _, gotB := d3.planMediaPath(&MediaInfo{ChatID: 2, MediaType: mediapkg.Photo, FileName: "a.jpg", MessageID: 1})
+	if gotA == gotB {
+		t.Fatalf("不同聊天生成了相同路径: %s", gotA)
+	}
+}
+
 // TestPlanMediaPath_MaliciousNamesStayInRoot 校验来自 Telegram 的文件名/标题
 // （他人可控）无法越出下载根目录
 func TestPlanMediaPath_MaliciousNamesStayInRoot(t *testing.T) {
@@ -170,6 +213,9 @@ func TestValidatePathTemplate(t *testing.T) {
 		"{chat_id}/{name}",
 		"{chat_id}/{chat_title}/{date}/{name}",
 		"{chat_id}/{msg_id}{ext}",
+		// 无 {chat_id} 的纯标题隔离模板：标题缺失时回退 chat_<id>，聊天隔离不塌
+		"{chat_title}/{type}/{album}/{name}",
+		"{chat_title}/{date}/{name}",
 	}
 	for _, tpl := range valid {
 		if problem := ValidatePathTemplate(tpl); problem != "" {
@@ -179,7 +225,7 @@ func TestValidatePathTemplate(t *testing.T) {
 
 	invalid := []string{
 		"", "  ", "/{name}", "a/../{name}", "{name}\\{ext}", "{nope}/{name}",
-		"{chat_id}/{type}", "{name}", "{chat_title}/{date}/{name}",
+		"{chat_id}/{type}", "{name}", "{sender}/{date}/{name}",
 		"{chat_id}/{ChatID}/{name}", "{chat_id}/{name-typo}", "{chat_id}/{name", "{chat_id}/name}",
 	}
 	for _, tpl := range invalid {

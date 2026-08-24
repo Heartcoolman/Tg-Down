@@ -78,9 +78,11 @@ func ValidatePathTemplate(tpl string) string {
 		return "路径模板包含格式错误的占位符"
 	}
 	// message_id 只在单个聊天内唯一，chat_title/sender/date 也都可能重复。
-	// 下载根目录由所有聊天共享，因此必须把不可碰撞的 chat_id 放进最终路径。
-	if !strings.Contains(tpl, "{"+phChatID+"}") {
-		return "路径模板必须包含 {chat_id}，否则不同聊天的文件可能互相覆盖"
+	// 下载根目录由所有聊天共享，因此必须把不可碰撞的 chat_id 放进最终路径；
+	// {chat_title} 也可充当聊天隔离层——标题缺失时展开逻辑回退为 chat_<id>
+	// （见 pathContext.value），不会让不同聊天的文件混进同一个目录。
+	if !strings.Contains(tpl, "{"+phChatID+"}") && !strings.Contains(tpl, "{"+phChatTitle+"}") {
+		return "路径模板必须包含 {chat_id} 或 {chat_title}，否则不同聊天的文件可能互相覆盖"
 	}
 	for _, p := range uniquePlaceholders {
 		if strings.Contains(tpl, "{"+p+"}") {
