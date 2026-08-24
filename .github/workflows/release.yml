@@ -151,7 +151,7 @@ jobs:
 
       - name: Cache TDLib
         id: tdlib-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: C:/tdlib
           key: tdlib-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-tdlib.sh') }}
@@ -361,7 +361,7 @@ jobs:
 
       - name: Cache TDLib
         id: tdlib-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: C:/tdlib
           key: tdlib-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-tdlib.sh') }}
