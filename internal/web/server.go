@@ -26,6 +26,7 @@ import (
 	"tg-down/internal/queue"
 	"tg-down/internal/store"
 	"tg-down/internal/tgapi"
+	"tg-down/internal/timeline"
 )
 
 // distFS 是 Vite 的构建产物（web/ 目录经 `make web` 生成）。
@@ -117,6 +118,11 @@ type Server struct {
 	stateErr string
 	chats    []tgapi.ChatInfo
 
+	// 时间线（sidecar 扫描索引）及其重建互斥锁
+	timelineIndex  *timeline.Index
+	timelineMu     sync.Mutex
+	timelineBuiltAt time.Time
+
 	codeCh   chan string
 	passCh   chan string
 	credCh   chan struct{} // Web 端提交 API 凭据的信号
@@ -154,6 +160,7 @@ func New(client tgapi.Client, st *store.Store, log *logger.Logger, addr string, 
 		trustProxy:   envEnabled(os.Getenv(trustProxyEnv)),
 		hub:          newSSEHub(),
 		state:        StateConnecting,
+		timelineIndex: timeline.New(),
 		codeCh:       make(chan string, authChanSize),
 		passCh:       make(chan string, authChanSize),
 		credCh:       make(chan struct{}, authChanSize),

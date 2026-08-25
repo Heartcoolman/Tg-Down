@@ -8,6 +8,7 @@ import { Logs } from './components/Logs'
 import { Schedules } from './components/Schedules'
 import { SettingsPanel } from './components/Settings'
 import { Tasks } from './components/Tasks'
+import { Timeline } from './components/Timeline'
 import { CONNECTION_LABEL, fmtSize } from './format'
 import { LOCAL_INSTANCE, desktopApi, probeDesktop, selectedInstance } from './desktop'
 import type { DesktopInfo } from './types'
@@ -16,11 +17,12 @@ import {
 } from './store'
 import type { Settings } from './types'
 
-type Tab = 'tasks' | 'gallery' | 'history' | 'schedules' | 'logs' | 'settings'
+type Tab = 'tasks' | 'gallery' | 'timeline' | 'history' | 'schedules' | 'logs' | 'settings'
 
 const TABS: Array<[Tab, string]> = [
   ['tasks', '任务'],
   ['gallery', '画廊'],
+  ['timeline', '时间线'],
   ['history', '历史'],
   ['schedules', '定时'],
   ['logs', '日志'],
@@ -133,6 +135,7 @@ export function App() {
           <Overview settings={settings} />
           {tab === 'tasks' && <Tasks />}
           {tab === 'gallery' && <Gallery />}
+          {tab === 'timeline' && <Timeline />}
           {tab === 'history' && <History />}
           {tab === 'schedules' && <Schedules />}
           {tab === 'logs' && <Logs />}

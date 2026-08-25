@@ -875,3 +875,73 @@ func TestMetadataSidecarIsPrivateAndDoesNotFollowSymlink(t *testing.T) {
 		t.Errorf("sidecar 权限 = %o, want %o", info.Mode().Perm(), metadataFilePerm)
 	}
 }
+
+// TestMetadataSidecarFullFields 校验 sidecar 包含全量信息：
+// 文案、消息 ID、可读日期、群聊标题、文件唯一 ID、消息链接、任务 ID
+func TestMetadataSidecarFullFields(t *testing.T) {
+	root := t.TempDir()
+	d := newTestDownloader(root)
+	d.SetSaveMetadata(true)
+	d.SetDownloadFunc(func(_ context.Context, _ *MediaInfo, path string) error {
+		return os.WriteFile(path, []byte("data"), 0o600)
+	})
+
+	media := &MediaInfo{
+		MessageID: 42, ChatID: -100123, ChatTitle: "我的频道",
+		Date: time.Date(2026, 8, 25, 2, 30, 0, 0, time.UTC),
+		SenderID: 888, Caption: "测试文案", AlbumID: 9,
+		MediaType: "photo", FileName: "photo.jpg", FileSize: 4, MimeType: "image/jpeg",
+		UniqueID: "uniq-abc", TaskID: "task-1",
+	}
+	if err := d.DownloadMedia(context.Background(), media); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, "chat_-100123", "album_9", "photo.jpg.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got mediaSidecar
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("sidecar 不是合法 JSON: %v\n%s", err, data)
+	}
+
+	want := mediaSidecar{
+		MessageID:  42,
+		ChatID:     -100123,
+		ChatTitle:  "我的频道",
+		Date:       media.Date.Unix(),
+		DateText:   "2026-08-25 02:30:00",
+		SenderID:   888,
+		Caption:    "测试文案",
+		AlbumID:    9,
+		MediaType:  "photo",
+		FileName:   "photo.jpg",
+		FileSize:   4,
+		MimeType:   "image/jpeg",
+		UniqueID:   "uniq-abc",
+		TaskID:     "task-1",
+		MessageURL: "https://t.me/c/100123/42",
+	}
+	if got != want {
+		t.Errorf("sidecar 内容 = %+v\n期望           = %+v", got, want)
+	}
+}
+
+// TestMessageURL 覆盖 t.me 链接拼接的边界
+func TestMessageURL(t *testing.T) {
+	tests := []struct {
+		chatID, msgID int64
+		want          string
+	}{
+		{-100123, 42, "https://t.me/c/100123/42"}, // 群/频道：负数转正
+		{100, 7, "https://t.me/c/100/7"},          // 正数聊天
+		{0, 1, ""},                                // 缺聊天 ID
+		{-5, 0, ""},                               // 缺消息 ID
+	}
+	for _, tt := range tests {
+		if got := messageURL(tt.chatID, tt.msgID); got != tt.want {
+			t.Errorf("messageURL(%d,%d) = %q, want %q", tt.chatID, tt.msgID, got, tt.want)
+		}
+	}
+}

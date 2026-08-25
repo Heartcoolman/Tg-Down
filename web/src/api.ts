@@ -1,7 +1,7 @@
 import type {
   Chat, DownloadSettings, ExportResult, HistoryFilters, HistoryPage, HistoryStatsResponse,
   OKResponse, ResolvedTarget, Schedule, Settings, SettingsUpdate, SettingsUpdateResponse,
-  StateSnapshot, Task,
+  StateSnapshot, Task, TimelinePage,
 } from './types'
 import { apiBase } from './desktop'
 
@@ -126,6 +126,10 @@ export const api = {
 
   history: (params: URLSearchParams) => get<HistoryPage>(withToken('/api/history?' + params.toString())),
   historyStats: (params: URLSearchParams) => get<HistoryStatsResponse>(withToken('/api/history/stats?' + params.toString())),
+  deleteHistory: (id: number) =>
+    request<OKResponse>(withToken(`/api/history/${id}`), { method: 'DELETE' }),
+  clearTaskHistory: (id: string) =>
+    request<{ deleted: number }>(withToken(`/api/tasks/${encodeURIComponent(id)}/history`), { method: 'DELETE' }),
   // 导出走浏览器下载而非 fetch：响应带 Content-Disposition，交给浏览器直接落盘，
   // 避免把整份导出读进内存再造一个 blob
   exportHistory: async (params: URLSearchParams) => {
@@ -154,7 +158,14 @@ export const api = {
 
   exportChat: (chat_id: number, chat_title: string, limit: number) =>
     post<ExportResult>(withToken('/api/export'), { chat_id, chat_title, limit }),
+
+  timeline: (params: URLSearchParams) =>
+    get<TimelinePage>(withToken('/api/timeline?' + params.toString())),
 }
+
+// 时间线媒体文件 URL（按相对路径寻址，后端校验防越界）
+export const timelineFileURL = (relPath: string) =>
+  withToken('/api/timeline/file?path=' + encodeURIComponent(relPath))
 
 // 媒体 URL：按 history id 寻址，后端据此查库拿路径（见 internal/web/media.go）
 export const thumbURL = (id: number) => withToken(`/api/history/${id}/thumb`)

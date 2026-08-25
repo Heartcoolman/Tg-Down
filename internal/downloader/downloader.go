@@ -1137,16 +1137,21 @@ func (d *Downloader) downloadWithPauseLoop(
 
 // mediaSidecar 是 <文件>.json 元数据的载荷结构
 type mediaSidecar struct {
-	MessageID int64  `json:"message_id"`
-	ChatID    int64  `json:"chat_id"`
-	Date      int64  `json:"date"`
-	SenderID  int64  `json:"sender_id"`
-	Caption   string `json:"caption"`
-	AlbumID   int64  `json:"album_id"`
-	MediaType string `json:"media_type"`
-	FileName  string `json:"file_name"`
-	FileSize  int64  `json:"file_size"`
-	MimeType  string `json:"mime_type"`
+	MessageID  int64  `json:"message_id"`
+	ChatID     int64  `json:"chat_id"`
+	ChatTitle  string `json:"chat_title,omitempty"`
+	Date       int64  `json:"date"`
+	DateText   string `json:"date_text,omitempty"`
+	SenderID   int64  `json:"sender_id"`
+	Caption    string `json:"caption"`
+	AlbumID    int64  `json:"album_id"`
+	MediaType  string `json:"media_type"`
+	FileName   string `json:"file_name"`
+	FileSize   int64  `json:"file_size"`
+	MimeType   string `json:"mime_type"`
+	UniqueID   string `json:"unique_id,omitempty"`
+	TaskID     string `json:"task_id,omitempty"`
+	MessageURL string `json:"message_url,omitempty"`
 }
 
 // ensureMetadataSidecar 在 sidecar 尚不存在时补写一份。
@@ -1171,16 +1176,21 @@ func (d *Downloader) writeMetadataSidecar(media *MediaInfo, filePath string) {
 		return
 	}
 	payload := mediaSidecar{
-		MessageID: media.MessageID,
-		ChatID:    media.ChatID,
-		Date:      media.Date.Unix(),
-		SenderID:  media.SenderID,
-		Caption:   media.Caption,
-		AlbumID:   media.AlbumID,
-		MediaType: media.MediaType,
-		FileName:  media.FileName,
-		FileSize:  media.FileSize,
-		MimeType:  media.MimeType,
+		MessageID:  media.MessageID,
+		ChatID:     media.ChatID,
+		ChatTitle:  media.ChatTitle,
+		Date:       media.Date.Unix(),
+		DateText:   sidecarDateText(media.Date),
+		SenderID:   media.SenderID,
+		Caption:    media.Caption,
+		AlbumID:    media.AlbumID,
+		MediaType:  media.MediaType,
+		FileName:   media.FileName,
+		FileSize:   media.FileSize,
+		MimeType:   media.MimeType,
+		UniqueID:   media.UniqueID,
+		TaskID:     media.TaskID,
+		MessageURL: messageURL(media.ChatID, media.MessageID),
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -1190,6 +1200,26 @@ func (d *Downloader) writeMetadataSidecar(media *MediaInfo, filePath string) {
 	if err := writeFileAtomic(filePath+".json", data, metadataFilePerm); err != nil {
 		d.logger.Warn("写入元数据 sidecar 失败: %v", err)
 	}
+}
+
+// sidecarDateText 返回 sidecar 中的人类可读消息日期；零值时间为空串
+func sidecarDateText(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format("2006-01-02 15:04:05")
+}
+
+// messageURL 拼出可直接打开该消息的 t.me 链接。
+// 私有群/频道统一用 c/<chatID>/<msgID> 形式（chat_id 负数变正数）。
+func messageURL(chatID, messageID int64) string {
+	if chatID == 0 || messageID == 0 {
+		return ""
+	}
+	if chatID < 0 {
+		chatID = -chatID
+	}
+	return fmt.Sprintf("https://t.me/c/%d/%d", chatID, messageID)
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {

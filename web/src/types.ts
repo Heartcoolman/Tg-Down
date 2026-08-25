@@ -133,6 +133,43 @@ export interface DownloadSettings {
   active: number
 }
 
+// —— 时间线（类 Telegram 本地浏览）——
+
+export interface TimelineChat {
+  chat_id: number
+  title: string
+  count: number
+  last_date: number
+  last_date_text?: string
+}
+
+export interface TimelineEntry {
+  message_id: number
+  chat_id: number
+  chat_title?: string
+  date: number
+  date_text?: string
+  sender_id?: number
+  caption?: string
+  album_id?: number
+  media_type: string
+  file_name: string
+  file_size?: number
+  mime_type?: string
+  unique_id?: string
+  message_url?: string
+  rel_path: string
+}
+
+export interface TimelinePage {
+  chats: TimelineChat[]
+  items: TimelineEntry[]
+  /** 下一页游标（原样回传 before_date/before_msg_id）；空 = 末页 */
+  next_cursor?: string
+  limit: number
+  built_at: number
+}
+
 export interface OKResponse {
   status: 'ok'
 }

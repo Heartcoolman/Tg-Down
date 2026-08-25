@@ -108,7 +108,8 @@ type DownloadConfig struct {
 	DisableClassifyByType bool `yaml:"disable_classify_by_type"`
 	// PathTemplate 是落盘路径模板，空 = downloader.DefaultPathTemplate（即 v2.x 的既有布局）。
 	// 可用占位符：{chat_id} {chat_title} {type} {album} {date} {msg_id} {sender} {name} {ext}，
-	// 必须包含 {chat_id}，并至少包含 {name} 或 {msg_id}（否则跨聊天或同聊天文件会互相覆盖）。
+	// 必须至少包含 {chat_id} 或 {chat_title} 之一（聊天隔离；{chat_title} 缺标题时回退 chat_<id>），
+	// 并至少包含 {name} 或 {msg_id}（否则跨聊天或同聊天文件会互相覆盖）。
 	PathTemplate string `yaml:"path_template"`
 }
 
