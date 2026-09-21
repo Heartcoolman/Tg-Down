@@ -6,7 +6,7 @@ require (
 	github.com/energye/systray v1.0.3
 	github.com/gen2brain/beeep v0.11.2
 	github.com/joho/godotenv v1.5.1
-	github.com/wailsapp/wails/v2 v2.15.0
+	github.com/wailsapp/wails/v2 v2.16.0
 	github.com/zelenin/go-tdlib v1.0.0-beta1.0.20260509025013-0dd3ea652682
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
