@@ -1,6 +1,6 @@
 module tg-down
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/energye/systray v1.0.3
@@ -8,7 +8,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/wailsapp/wails/v2 v2.15.0
 	github.com/zelenin/go-tdlib v1.0.0-beta1.0.20260509025013-0dd3ea652682
-	golang.org/x/sys v0.47.0
+	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.57.0
