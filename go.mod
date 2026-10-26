@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/energye/systray v1.0.3
-	github.com/gen2brain/beeep v0.11.2
+	github.com/gen2brain/beeep v0.11.3
 	github.com/joho/godotenv v1.5.1
 	github.com/wailsapp/wails/v2 v2.15.0
 	github.com/zelenin/go-tdlib v1.0.0-beta1.0.20260509025013-0dd3ea652682
